@@ -1,0 +1,3098 @@
+#include "stm8s.h"
+#include "stm8s_gpio.h"
+#include "stm8s_clk.h"
+#include "stm8s_tim4.h"
+
+#define TIM4_PERIOD     255
+//#define ONBOARD_LED_PORT        GPIOB
+//#define ONBOARD_LED_PIN GPIO_PIN_5
+//#define WS2812B_PORT    GPIOA
+//#define WS2812B_PIN     GPIO_PIN_1
+
+//int q=2; //number of pins for output
+
+__IO uint32_t TimingDelay = 0;
+
+void Delay(__IO uint32_t nTime);
+void TimingDelay_Decrement(void);
+static void CLK_Config(void);
+static void TIM4_Config(void);
+static void GPIO_Config(void);
+
+static void CLK_Config(void)
+{
+  CLK_DeInit();
+  CLK_SYSCLKConfig(CLK_PRESCALER_CPUDIV1);
+  CLK_SYSCLKConfig(CLK_PRESCALER_HSIDIV1);
+}
+
+static void TIM4_Config(void)
+{
+  TIM4_DeInit();
+  TIM4_Cmd(DISABLE);
+  /* TIM4 configuration:
+   - TIM4CLK is set to 16 MHz, the TIM4 Prescaler is equal to 128 so the TIM1 counter
+   clock used is 16 MHz / 128 = 125 000 Hz
+  - With 125 000 Hz we can generate time base:
+      max time base is 2.048 ms if TIM4_PERIOD = 255 --> (255 + 1) / 125000 = 2.048 ms
+      min time base is 0.016 ms if TIM4_PERIOD = 1   --> (  1 + 1) / 125000 = 0.016 ms
+  - In this example we need to generate a time base equal to 1 ms
+   so TIM4_PERIOD = (0.001 * 125000 - 1) = 124 */
+  /* Time base configuration */
+  TIM4_TimeBaseInit(TIM4_PRESCALER_128, TIM4_PERIOD);
+  /* Clear TIM4 update flag */
+  TIM4_ClearFlag(TIM4_FLAG_UPDATE);
+  /* Enable update interrupt */
+  TIM4_ITConfig(TIM4_IT_UPDATE, ENABLE);
+  
+  /* enable interrupts */
+  enableInterrupts();
+
+  /* Enable TIM4 */
+  TIM4_Cmd(ENABLE);
+}
+
+INTERRUPT_HANDLER(TIM4_UPD_OVF_IRQHandler, 23)
+{
+   TimingDelay_Decrement();
+   /* Cleat Interrupt Pending bit */
+  TIM4_ClearITPendingBit(TIM4_IT_UPDATE);
+}
+
+static void GPIO_Config(void)
+{
+//  GPIO_DeInit(ONBOARD_LED_PORT);
+//  GPIO_Init(ONBOARD_LED_PORT, ONBOARD_LED_PIN, GPIO_MODE_OUT_PP_HIGH_FAST);
+//  GPIO_DeInit(WS2812B_PORT);
+//  GPIO_Init(WS2812B_PORT, WS2812B_PIN, GPIO_MODE_OUT_PP_LOW_FAST);
+  GPIO_DeInit(GPIOD);
+  GPIO_Init(GPIOD, GPIO_PIN_3, GPIO_MODE_OUT_PP_LOW_FAST);
+  GPIO_Init(GPIOD, GPIO_PIN_2, GPIO_MODE_OUT_PP_LOW_FAST);
+  GPIO_Init(GPIOD, GPIO_PIN_1, GPIO_MODE_OUT_PP_LOW_FAST);
+  GPIO_DeInit(GPIOC);
+  GPIO_Init(GPIOC, GPIO_PIN_7, GPIO_MODE_OUT_PP_LOW_FAST);
+  GPIO_Init(GPIOC, GPIO_PIN_6, GPIO_MODE_OUT_PP_LOW_FAST);
+  GPIO_Init(GPIOC, GPIO_PIN_5, GPIO_MODE_OUT_PP_LOW_FAST);
+  GPIO_Init(GPIOC, GPIO_PIN_4, GPIO_MODE_OUT_PP_LOW_FAST);
+  GPIO_Init(GPIOC, GPIO_PIN_3, GPIO_MODE_OUT_PP_LOW_FAST);
+}
+
+void Delay(__IO uint32_t nTime)
+{
+  TimingDelay = nTime;
+  while (TimingDelay != 0);
+}
+
+void TimingDelay_Decrement(void)
+{
+  if (TimingDelay != 0x00)
+  {
+    TimingDelay--;
+  }
+}
+
+// UINT type definition
+#ifndef _UINT_DEF_
+#define _UINT_DEF_
+typedef unsigned int UINT;
+#endif  
+
+// BYTE type definition
+#ifndef _BYTE_DEF_
+#define _BYTE_DEF_
+typedef unsigned char BYTE;
+#endif   
+
+
+#ifndef E_OK
+#define E_OK 						0x00
+#endif   
+
+#ifndef E_Already_Initialised
+#define E_Already_Initialised 		0x01
+#endif   
+
+//#define delay_1us(); delay(0);
+//
+//#define delay_10us(); delay(18);
+//
+//#define delay_50us(); delay(98);
+//
+//#define delay_100us(); delay(198);
+//
+//#define delay_1ms(); delay(1998);
+//
+//#define delay_10ms(); delay(19998);
+
+const int NbLeds = 30;
+unsigned char LedsArray[30];
+unsigned int nbLedsBytes = 30*3;
+//unsigned char LedsArray[30];
+//unsigned char LedsArray[30];
+//unsigned char LedsArray[30];
+//unsigned char LedsArray[30];
+//unsigned char LedsArray[30];
+//unsigned char LedsArray[30];
+//unsigned char LedsArray[30];
+//unsigned char LedsArray[30];
+
+void SendLedsArrayD3()
+{
+  asm(
+        "lb_intiLoop:                          \n"
+        "LDW      X,             #0xFFFF       \n"// set -1 in X, so that first inc gets 0, as inc has to be in the beginning of the loop
+        "LDW      Y,             L:nbLedsBytes \n"//2
+        "lb_begin_loop:                        \n"
+//---------------------------------------------------------------
+//--------------- bit 0 -----------------------------------------
+        "INCW    X                           \n"// L t+2
+        "BSET    L:0x500F,      #0x3         \n"// H t1
+        "lb_start_bit0:                      \n"//
+        "LD      A,           (L:LedsArray,X)\n"// H t2
+        "AND     A,             #0x80        \n"// H t3
+        "JREQ    L:lb_bit0_Send_0            \n"// H0 t4 t5 : 2 jump to Zero, 1 Stay in One + next nop
+        "lb_bit0_Send_1:                     \n"//------Send 1 : 800ns High, 450ns Low (12,8) 750ns,500ns
+        "nop                                 \n"//1 to have send0 send1 equality
+        "nop                                 \n"// H1 t6
+        "nop                                 \n"// H1 t7
+        "nop                                 \n"// H1 t8
+        "nop                                 \n"// H1 t9
+        "nop                                 \n"// H1 t10
+        "nop                                 \n"// H1 t11
+        "nop                                 \n"// H1 t12
+        "BRES    L:0x500F,      #0x3         \n"// L1 t1
+        "nop                                 \n"// L1 t2
+        "JRA     L:lb_start_bit1             \n"// L1 JRA:2 t4 
+                                                // L1 NextBitTest:4  t8
+        "lb_bit0_Send_0:                     \n"//------Send 0 : 400ns High, 850ns Low (7,13) 375ns,875ns
+                                                // H0 t6 in stand of t4
+        "BRES    L:0x500F,      #0x3         \n"// L0 t1
+        "nop                                 \n"// L0 t1
+        "nop                                 \n"// L0 t2
+        "nop                                 \n"// L0 t3
+        "nop                                 \n"// L0 t4
+        "nop                                 \n"// L0 t5
+        "nop                                 \n"// L0 t6
+        "nop                                 \n"// L0 t7
+        "nop                                 \n"// L0 t8
+                                                //NextBitTest:4+SP = 5. L t13
+//--------------- bit 1 -----------------------------------------
+        "lb_start_bit1:                      \n"//
+        "LD      A,           (L:LedsArray,X)\n"//1
+        "AND     A,             #0x40        \n"//1
+        "JREQ    L:lb_bit1_Send_0            \n"//2 jump to Zero, 1 Stay in One + next nop
+        "lb_bit1_Send_1:                     \n"
+        "nop                                 \n"//1 to have send0 send1 equality
+        "BSET    L:0x500F,      #0x3         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "nop                                 \n"// H t7
+        "nop                                 \n"// H t8
+        "nop                                 \n"// H t9
+        "nop                                 \n"// H t10
+        "nop                                 \n"// H t11
+        "nop                                 \n"// H t12
+        "BRES    L:0x500F,      #0x3         \n"// L t1
+        "nop                                 \n"// L t2
+        "JRA     L:lb_start_bit2             \n"// L JRA:2 t4 
+                                                // L NextBitTest:4  t8
+        "lb_bit1_Send_0:                     \n"//------Send 0 : 400ns High, 850ns Low (6,14) 375ns,875ns
+        "BSET    L:0x500F,      #0x3         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "BRES    L:0x500F,      #0x3         \n"// L t1
+        "nop                                 \n"// L t1
+        "nop                                 \n"// L t2
+        "nop                                 \n"// L t3
+        "nop                                 \n"// L t4
+        "nop                                 \n"// L t5
+        "nop                                 \n"// L t6
+        "nop                                 \n"// L t7
+        "nop                                 \n"// L t8
+        "nop                                 \n"// L t9
+                                                //NextBitTest:4+SP = 5. L t14
+//--------------- bit 2 -----------------------------------------
+        "lb_start_bit2:                      \n"//
+        "LD      A,           (L:LedsArray,X)\n"//1
+        "AND     A,             #0x20        \n"//1
+        "JREQ    L:lb_bit2_Send_0            \n"//2 jump to Zero, 1 Stay in One + next nop
+        "lb_bit2_Send_1:                     \n"
+        "nop                                 \n"//1 to have send0 send1 equality
+        "BSET    L:0x500F,      #0x3         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "nop                                 \n"// H t7
+        "nop                                 \n"// H t8
+        "nop                                 \n"// H t9
+        "nop                                 \n"// H t10
+        "nop                                 \n"// H t11
+        "nop                                 \n"// H t12
+        "BRES    L:0x500F,      #0x3         \n"// L t1
+        "nop                                 \n"// L t2
+        "JRA     L:lb_start_bit3             \n"// L JRA:2 t4 
+                                                // L NextBitTest:4  t8
+        "lb_bit2_Send_0:                     \n"//------Send 0 : 400ns High, 850ns Low (6,14) 375ns,875ns
+        "BSET    L:0x500F,      #0x3         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "BRES    L:0x500F,      #0x3         \n"// L t1
+        "nop                                 \n"// L t1
+        "nop                                 \n"// L t2
+        "nop                                 \n"// L t3
+        "nop                                 \n"// L t4
+        "nop                                 \n"// L t5
+        "nop                                 \n"// L t6
+        "nop                                 \n"// L t7
+        "nop                                 \n"// L t8
+        "nop                                 \n"// L t9
+                                                //NextBitTest:4+SP = 5. L t14
+//--------------- bit 3 -----------------------------------------
+        "lb_start_bit3:                      \n"//
+        "LD      A,           (L:LedsArray,X)\n"//1
+        "AND     A,             #0x10        \n"//1
+        "JREQ    L:lb_bit3_Send_0            \n"//2 jump to Zero, 1 Stay in One + next nop
+        "lb_bit3_Send_1:                     \n"
+        "nop                                 \n"//1 to have send0 send1 equality
+        "BSET    L:0x500F,      #0x3         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "nop                                 \n"// H t7
+        "nop                                 \n"// H t8
+        "nop                                 \n"// H t9
+        "nop                                 \n"// H t10
+        "nop                                 \n"// H t11
+        "nop                                 \n"// H t12
+        "BRES    L:0x500F,      #0x3         \n"// L t1
+        "nop                                 \n"// L t2
+        "JRA     L:lb_start_bit4             \n"// L JRA:2 t4 
+                                                // L NextBitTest:4  t8
+        "lb_bit3_Send_0:                     \n"//------Send 0 : 400ns High, 850ns Low (6,14) 375ns,875ns
+        "BSET    L:0x500F,      #0x3         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "BRES    L:0x500F,      #0x3         \n"// L t1
+        "nop                                 \n"// L t1
+        "nop                                 \n"// L t2
+        "nop                                 \n"// L t3
+        "nop                                 \n"// L t4
+        "nop                                 \n"// L t5
+        "nop                                 \n"// L t6
+        "nop                                 \n"// L t7
+        "nop                                 \n"// L t8
+        "nop                                 \n"// L t9
+                                                //NextBitTest:4+SP = 5. L t14
+//--------------- bit 4 -----------------------------------------
+        "lb_start_bit4:                      \n"//
+        "LD      A,           (L:LedsArray,X)\n"//1
+        "AND     A,             #0x08        \n"//1
+        "JREQ    L:lb_bit4_Send_0            \n"//2 jump to Zero, 1 Stay in One + next nop
+        "lb_bit4_Send_1:                     \n"
+        "nop                                 \n"//1 to have send0 send1 equality
+        "BSET    L:0x500F,      #0x3         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "nop                                 \n"// H t7
+        "nop                                 \n"// H t8
+        "nop                                 \n"// H t9
+        "nop                                 \n"// H t10
+        "nop                                 \n"// H t11
+        "nop                                 \n"// H t12
+        "BRES    L:0x500F,      #0x3         \n"// L t1
+        "nop                                 \n"// L t2
+        "JRA     L:lb_start_bit5             \n"// L JRA:2 t4 
+                                                // L NextBitTest:4  t8
+        "lb_bit4_Send_0:                     \n"//------Send 0 : 400ns High, 850ns Low (6,14) 375ns,875ns
+        "BSET    L:0x500F,      #0x3         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "BRES    L:0x500F,      #0x3         \n"// L t1
+        "nop                                 \n"// L t1
+        "nop                                 \n"// L t2
+        "nop                                 \n"// L t3
+        "nop                                 \n"// L t4
+        "nop                                 \n"// L t5
+        "nop                                 \n"// L t6
+        "nop                                 \n"// L t7
+        "nop                                 \n"// L t8
+        "nop                                 \n"// L t9
+                                                //NextBitTest:4+SP = 5. L t14
+//--------------- bit 5 -----------------------------------------
+        "lb_start_bit5:                      \n"//
+        "LD      A,           (L:LedsArray,X)\n"//1
+        "AND     A,             #0x04        \n"//1
+        "JREQ    L:lb_bit5_Send_0            \n"//2 jump to Zero, 1 Stay in One + next nop
+        "lb_bit5_Send_1:                     \n"
+        "nop                                 \n"//1 to have send0 send1 equality
+        "BSET    L:0x500F,      #0x3         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "nop                                 \n"// H t7
+        "nop                                 \n"// H t8
+        "nop                                 \n"// H t9
+        "nop                                 \n"// H t10
+        "nop                                 \n"// H t11
+        "nop                                 \n"// H t12
+        "BRES    L:0x500F,      #0x3         \n"// L t1
+        "nop                                 \n"// L t2
+        "JRA     L:lb_start_bit6             \n"// L JRA:2 t4 
+                                                // L NextBitTest:4  t8
+        "lb_bit5_Send_0:                     \n"//------Send 0 : 400ns High, 850ns Low (6,14) 375ns,875ns
+        "BSET    L:0x500F,      #0x3         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "BRES    L:0x500F,      #0x3         \n"// L t1
+        "nop                                 \n"// L t1
+        "nop                                 \n"// L t2
+        "nop                                 \n"// L t3
+        "nop                                 \n"// L t4
+        "nop                                 \n"// L t5
+        "nop                                 \n"// L t6
+        "nop                                 \n"// L t7
+        "nop                                 \n"// L t8
+        "nop                                 \n"// L t9
+                                                //NextBitTest:4+SP = 5. L t14
+//--------------- bit 6 -----------------------------------------
+        "lb_start_bit6:                      \n"//
+        "LD      A,           (L:LedsArray,X)\n"//1
+        "AND     A,             #0x02        \n"//1
+        "JREQ    L:lb_bit6_Send_0            \n"//2 jump to Zero, 1 Stay in One + next nop
+        "lb_bit6_Send_1:                     \n"
+        "nop                                 \n"//1 to have send0 send1 equality
+        "BSET    L:0x500F,      #0x3         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "nop                                 \n"// H t7
+        "nop                                 \n"// H t8
+        "nop                                 \n"// H t9
+        "nop                                 \n"// H t10
+        "nop                                 \n"// H t11
+        "nop                                 \n"// H t12
+        "BRES    L:0x500F,      #0x3         \n"// L t1
+        "nop                                 \n"// L t2
+        "JRA     L:lb_start_bit7             \n"// L JRA:2 t4 
+                                                // L NextBitTest:4  t8
+        "lb_bit6_Send_0:                     \n"//------Send 0 : 400ns High, 850ns Low (6,14) 375ns,875ns
+        "BSET    L:0x500F,      #0x3         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "BRES    L:0x500F,      #0x3         \n"// L t1
+        "nop                                 \n"// L t1
+        "nop                                 \n"// L t2
+        "nop                                 \n"// L t3
+        "nop                                 \n"// L t4
+        "nop                                 \n"// L t5
+        "nop                                 \n"// L t6
+        "nop                                 \n"// L t7
+        "nop                                 \n"// L t8
+        "nop                                 \n"// L t9
+                                                //NextBitTest:4+SP = 5. L t14
+//--------------- bit 7 -----------------------------------------
+        "lb_start_bit7:                      \n"//
+        "LD      A,           (L:LedsArray,X)\n"//1
+        "AND     A,             #0x01        \n"//1
+        "JREQ    L:lb_bit7_Send_0            \n"//2 jump to Zero, 1 Stay in One + next nop
+        "lb_bit7_Send_1:                     \n"
+        "nop                                 \n"//1 to have send0 send1 equality
+        "BSET    L:0x500F,      #0x3         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "nop                                 \n"// H t7
+        "nop                                 \n"// H t8
+        "nop                                 \n"// H t9
+        "nop                                 \n"// H t10
+        "nop                                 \n"// H t11
+        "nop                                 \n"// H t12
+        "BRES    L:0x500F,      #0x3         \n"// L t1
+        "DECW    Y                           \n"//2
+        "JREQ    L:lb_exit                   \n"//1 on loop, 2 jmp to exit
+        "JP      L:lb_begin_loop             \n"//5
+                                                // 
+        "lb_bit7_Send_0:                     \n"//------Send 0 : 400ns High, 850ns Low (6,14) 375ns,875ns
+        "BSET    L:0x500F,      #0x3         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "BRES    L:0x500F,      #0x3         \n"// L t1
+        "nop                                 \n"// L t1
+        "nop                                 \n"// L t2
+        "nop                                 \n"// L t3
+        "nop                                 \n"// L t4
+        "nop                                 \n"// L t5
+        "nop                                 \n"// L t6
+                                                // L DECW 2, JREQ 1, 2 = 5 =>   t14
+//--------------------------------------------------------
+//--------------------------------------------------------
+        "DECW    Y                           \n"//2
+        "JREQ    L:lb_exit                   \n"//1 on loop, 2 jmp to exit
+        "JP      L:lb_begin_loop             \n"//5
+        "lb_exit:nop");
+  
+}
+void SendLedsArrayD2()
+{
+  asm(
+        "lb_intiLoop:                          \n"
+        "LDW      X,             #0xFFFF       \n"// set -1 in X, so that first inc gets 0, as inc has to be in the beginning of the loop
+        "LDW      Y,             L:nbLedsBytes \n"//2
+        "lb_begin_loop:                        \n"
+//---------------------------------------------------------------
+//--------------- bit 0 -----------------------------------------
+        "INCW    X                           \n"// L t+2
+        "BSET    L:0x500F,      #0x2         \n"// H t1
+        "lb_start_bit0:                      \n"//
+        "LD      A,           (L:LedsArray,X)\n"// H t2
+        "AND     A,             #0x80        \n"// H t3
+        "JREQ    L:lb_bit0_Send_0            \n"// H0 t4 t5 : 2 jump to Zero, 1 Stay in One + next nop
+        "lb_bit0_Send_1:                     \n"//------Send 1 : 800ns High, 450ns Low (12,8) 750ns,500ns
+        "nop                                 \n"//1 to have send0 send1 equality
+        "nop                                 \n"// H1 t6
+        "nop                                 \n"// H1 t7
+        "nop                                 \n"// H1 t8
+        "nop                                 \n"// H1 t9
+        "nop                                 \n"// H1 t10
+        "nop                                 \n"// H1 t11
+        "nop                                 \n"// H1 t12
+        "BRES    L:0x500F,      #0x2         \n"// L1 t1
+        "nop                                 \n"// L1 t2
+        "JRA     L:lb_start_bit1             \n"// L1 JRA:2 t4 
+                                                // L1 NextBitTest:4  t8
+        "lb_bit0_Send_0:                     \n"//------Send 0 : 400ns High, 850ns Low (7,13) 375ns,875ns
+                                                // H0 t6 in stand of t4
+        "BRES    L:0x500F,      #0x2         \n"// L0 t1
+        "nop                                 \n"// L0 t1
+        "nop                                 \n"// L0 t2
+        "nop                                 \n"// L0 t3
+        "nop                                 \n"// L0 t4
+        "nop                                 \n"// L0 t5
+        "nop                                 \n"// L0 t6
+        "nop                                 \n"// L0 t7
+        "nop                                 \n"// L0 t8
+                                                //NextBitTest:4+SP = 5. L t13
+//--------------- bit 1 -----------------------------------------
+        "lb_start_bit1:                      \n"//
+        "LD      A,           (L:LedsArray,X)\n"//1
+        "AND     A,             #0x40        \n"//1
+        "JREQ    L:lb_bit1_Send_0            \n"//2 jump to Zero, 1 Stay in One + next nop
+        "lb_bit1_Send_1:                     \n"
+        "nop                                 \n"//1 to have send0 send1 equality
+        "BSET    L:0x500F,      #0x2         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "nop                                 \n"// H t7
+        "nop                                 \n"// H t8
+        "nop                                 \n"// H t9
+        "nop                                 \n"// H t10
+        "nop                                 \n"// H t11
+        "nop                                 \n"// H t12
+        "BRES    L:0x500F,      #0x2         \n"// L t1
+        "nop                                 \n"// L t2
+        "JRA     L:lb_start_bit2             \n"// L JRA:2 t4 
+                                                // L NextBitTest:4  t8
+        "lb_bit1_Send_0:                     \n"//------Send 0 : 400ns High, 850ns Low (6,14) 375ns,875ns
+        "BSET    L:0x500F,      #0x2         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "BRES    L:0x500F,      #0x2         \n"// L t1
+        "nop                                 \n"// L t1
+        "nop                                 \n"// L t2
+        "nop                                 \n"// L t3
+        "nop                                 \n"// L t4
+        "nop                                 \n"// L t5
+        "nop                                 \n"// L t6
+        "nop                                 \n"// L t7
+        "nop                                 \n"// L t8
+        "nop                                 \n"// L t9
+                                                //NextBitTest:4+SP = 5. L t14
+//--------------- bit 2 -----------------------------------------
+        "lb_start_bit2:                      \n"//
+        "LD      A,           (L:LedsArray,X)\n"//1
+        "AND     A,             #0x20        \n"//1
+        "JREQ    L:lb_bit2_Send_0            \n"//2 jump to Zero, 1 Stay in One + next nop
+        "lb_bit2_Send_1:                     \n"
+        "nop                                 \n"//1 to have send0 send1 equality
+        "BSET    L:0x500F,      #0x2         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "nop                                 \n"// H t7
+        "nop                                 \n"// H t8
+        "nop                                 \n"// H t9
+        "nop                                 \n"// H t10
+        "nop                                 \n"// H t11
+        "nop                                 \n"// H t12
+        "BRES    L:0x500F,      #0x2         \n"// L t1
+        "nop                                 \n"// L t2
+        "JRA     L:lb_start_bit3             \n"// L JRA:2 t4 
+                                                // L NextBitTest:4  t8
+        "lb_bit2_Send_0:                     \n"//------Send 0 : 400ns High, 850ns Low (6,14) 375ns,875ns
+        "BSET    L:0x500F,      #0x2         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "BRES    L:0x500F,      #0x2         \n"// L t1
+        "nop                                 \n"// L t1
+        "nop                                 \n"// L t2
+        "nop                                 \n"// L t3
+        "nop                                 \n"// L t4
+        "nop                                 \n"// L t5
+        "nop                                 \n"// L t6
+        "nop                                 \n"// L t7
+        "nop                                 \n"// L t8
+        "nop                                 \n"// L t9
+                                                //NextBitTest:4+SP = 5. L t14
+//--------------- bit 3 -----------------------------------------
+        "lb_start_bit3:                      \n"//
+        "LD      A,           (L:LedsArray,X)\n"//1
+        "AND     A,             #0x10        \n"//1
+        "JREQ    L:lb_bit3_Send_0            \n"//2 jump to Zero, 1 Stay in One + next nop
+        "lb_bit3_Send_1:                     \n"
+        "nop                                 \n"//1 to have send0 send1 equality
+        "BSET    L:0x500F,      #0x2         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "nop                                 \n"// H t7
+        "nop                                 \n"// H t8
+        "nop                                 \n"// H t9
+        "nop                                 \n"// H t10
+        "nop                                 \n"// H t11
+        "nop                                 \n"// H t12
+        "BRES    L:0x500F,      #0x2         \n"// L t1
+        "nop                                 \n"// L t2
+        "JRA     L:lb_start_bit4             \n"// L JRA:2 t4 
+                                                // L NextBitTest:4  t8
+        "lb_bit3_Send_0:                     \n"//------Send 0 : 400ns High, 850ns Low (6,14) 375ns,875ns
+        "BSET    L:0x500F,      #0x2         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "BRES    L:0x500F,      #0x2         \n"// L t1
+        "nop                                 \n"// L t1
+        "nop                                 \n"// L t2
+        "nop                                 \n"// L t3
+        "nop                                 \n"// L t4
+        "nop                                 \n"// L t5
+        "nop                                 \n"// L t6
+        "nop                                 \n"// L t7
+        "nop                                 \n"// L t8
+        "nop                                 \n"// L t9
+                                                //NextBitTest:4+SP = 5. L t14
+//--------------- bit 4 -----------------------------------------
+        "lb_start_bit4:                      \n"//
+        "LD      A,           (L:LedsArray,X)\n"//1
+        "AND     A,             #0x08        \n"//1
+        "JREQ    L:lb_bit4_Send_0            \n"//2 jump to Zero, 1 Stay in One + next nop
+        "lb_bit4_Send_1:                     \n"
+        "nop                                 \n"//1 to have send0 send1 equality
+        "BSET    L:0x500F,      #0x2         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "nop                                 \n"// H t7
+        "nop                                 \n"// H t8
+        "nop                                 \n"// H t9
+        "nop                                 \n"// H t10
+        "nop                                 \n"// H t11
+        "nop                                 \n"// H t12
+        "BRES    L:0x500F,      #0x2         \n"// L t1
+        "nop                                 \n"// L t2
+        "JRA     L:lb_start_bit5             \n"// L JRA:2 t4 
+                                                // L NextBitTest:4  t8
+        "lb_bit4_Send_0:                     \n"//------Send 0 : 400ns High, 850ns Low (6,14) 375ns,875ns
+        "BSET    L:0x500F,      #0x2         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "BRES    L:0x500F,      #0x2         \n"// L t1
+        "nop                                 \n"// L t1
+        "nop                                 \n"// L t2
+        "nop                                 \n"// L t3
+        "nop                                 \n"// L t4
+        "nop                                 \n"// L t5
+        "nop                                 \n"// L t6
+        "nop                                 \n"// L t7
+        "nop                                 \n"// L t8
+        "nop                                 \n"// L t9
+                                                //NextBitTest:4+SP = 5. L t14
+//--------------- bit 5 -----------------------------------------
+        "lb_start_bit5:                      \n"//
+        "LD      A,           (L:LedsArray,X)\n"//1
+        "AND     A,             #0x04        \n"//1
+        "JREQ    L:lb_bit5_Send_0            \n"//2 jump to Zero, 1 Stay in One + next nop
+        "lb_bit5_Send_1:                     \n"
+        "nop                                 \n"//1 to have send0 send1 equality
+        "BSET    L:0x500F,      #0x2         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "nop                                 \n"// H t7
+        "nop                                 \n"// H t8
+        "nop                                 \n"// H t9
+        "nop                                 \n"// H t10
+        "nop                                 \n"// H t11
+        "nop                                 \n"// H t12
+        "BRES    L:0x500F,      #0x2         \n"// L t1
+        "nop                                 \n"// L t2
+        "JRA     L:lb_start_bit6             \n"// L JRA:2 t4 
+                                                // L NextBitTest:4  t8
+        "lb_bit5_Send_0:                     \n"//------Send 0 : 400ns High, 850ns Low (6,14) 375ns,875ns
+        "BSET    L:0x500F,      #0x2         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "BRES    L:0x500F,      #0x2         \n"// L t1
+        "nop                                 \n"// L t1
+        "nop                                 \n"// L t2
+        "nop                                 \n"// L t3
+        "nop                                 \n"// L t4
+        "nop                                 \n"// L t5
+        "nop                                 \n"// L t6
+        "nop                                 \n"// L t7
+        "nop                                 \n"// L t8
+        "nop                                 \n"// L t9
+                                                //NextBitTest:4+SP = 5. L t14
+//--------------- bit 6 -----------------------------------------
+        "lb_start_bit6:                      \n"//
+        "LD      A,           (L:LedsArray,X)\n"//1
+        "AND     A,             #0x02        \n"//1
+        "JREQ    L:lb_bit6_Send_0            \n"//2 jump to Zero, 1 Stay in One + next nop
+        "lb_bit6_Send_1:                     \n"
+        "nop                                 \n"//1 to have send0 send1 equality
+        "BSET    L:0x500F,      #0x2         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "nop                                 \n"// H t7
+        "nop                                 \n"// H t8
+        "nop                                 \n"// H t9
+        "nop                                 \n"// H t10
+        "nop                                 \n"// H t11
+        "nop                                 \n"// H t12
+        "BRES    L:0x500F,      #0x2         \n"// L t1
+        "nop                                 \n"// L t2
+        "JRA     L:lb_start_bit7             \n"// L JRA:2 t4 
+                                                // L NextBitTest:4  t8
+        "lb_bit6_Send_0:                     \n"//------Send 0 : 400ns High, 850ns Low (6,14) 375ns,875ns
+        "BSET    L:0x500F,      #0x2         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "BRES    L:0x500F,      #0x2         \n"// L t1
+        "nop                                 \n"// L t1
+        "nop                                 \n"// L t2
+        "nop                                 \n"// L t3
+        "nop                                 \n"// L t4
+        "nop                                 \n"// L t5
+        "nop                                 \n"// L t6
+        "nop                                 \n"// L t7
+        "nop                                 \n"// L t8
+        "nop                                 \n"// L t9
+                                                //NextBitTest:4+SP = 5. L t14
+//--------------- bit 7 -----------------------------------------
+        "lb_start_bit7:                      \n"//
+        "LD      A,           (L:LedsArray,X)\n"//1
+        "AND     A,             #0x01        \n"//1
+        "JREQ    L:lb_bit7_Send_0            \n"//2 jump to Zero, 1 Stay in One + next nop
+        "lb_bit7_Send_1:                     \n"
+        "nop                                 \n"//1 to have send0 send1 equality
+        "BSET    L:0x500F,      #0x2         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "nop                                 \n"// H t7
+        "nop                                 \n"// H t8
+        "nop                                 \n"// H t9
+        "nop                                 \n"// H t10
+        "nop                                 \n"// H t11
+        "nop                                 \n"// H t12
+        "BRES    L:0x500F,      #0x2         \n"// L t1
+        "DECW    Y                           \n"//2
+        "JREQ    L:lb_exit                   \n"//1 on loop, 2 jmp to exit
+        "JP      L:lb_begin_loop             \n"//5
+                                                // 
+        "lb_bit7_Send_0:                     \n"//------Send 0 : 400ns High, 850ns Low (6,14) 375ns,875ns
+        "BSET    L:0x500F,      #0x2         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "BRES    L:0x500F,      #0x2         \n"// L t1
+        "nop                                 \n"// L t1
+        "nop                                 \n"// L t2
+        "nop                                 \n"// L t3
+        "nop                                 \n"// L t4
+        "nop                                 \n"// L t5
+        "nop                                 \n"// L t6
+                                                // L DECW 2, JREQ 1, 2 = 5 =>   t14
+//--------------------------------------------------------
+//--------------------------------------------------------
+        "DECW    Y                           \n"//2
+        "JREQ    L:lb_exit                   \n"//1 on loop, 2 jmp to exit
+        "JP      L:lb_begin_loop             \n"//5
+        "lb_exit:nop");
+  
+}
+void SendLedsArrayC7()
+{
+  asm(
+        "lb_intiLoop:                          \n"
+        "LDW      X,             #0xFFFF       \n"// set -1 in X, so that first inc gets 0, as inc has to be in the beginning of the loop
+        "LDW      Y,             L:nbLedsBytes \n"//2
+        "lb_begin_loop:                        \n"
+//---------------------------------------------------------------
+//--------------- bit 0 -----------------------------------------
+        "INCW    X                           \n"// L t+2
+        "BSET    L:0x500A,      #0x7         \n"// H t1
+        "lb_start_bit0:                      \n"//
+        "LD      A,           (L:LedsArray,X)\n"// H t2
+        "AND     A,             #0x80        \n"// H t3
+        "JREQ    L:lb_bit0_Send_0            \n"// H0 t4 t5 : 2 jump to Zero, 1 Stay in One + next nop
+        "lb_bit0_Send_1:                     \n"//------Send 1 : 800ns High, 450ns Low (12,8) 750ns,500ns
+        "nop                                 \n"//1 to have send0 send1 equality
+        "nop                                 \n"// H1 t6
+        "nop                                 \n"// H1 t7
+        "nop                                 \n"// H1 t8
+        "nop                                 \n"// H1 t9
+        "nop                                 \n"// H1 t10
+        "nop                                 \n"// H1 t11
+        "nop                                 \n"// H1 t12
+        "BRES    L:0x500A,      #0x7         \n"// L1 t1
+        "nop                                 \n"// L1 t2
+        "JRA     L:lb_start_bit1             \n"// L1 JRA:2 t4 
+                                                // L1 NextBitTest:4  t8
+        "lb_bit0_Send_0:                     \n"//------Send 0 : 400ns High, 850ns Low (7,13) 375ns,875ns
+                                                // H0 t6 in stand of t4
+        "BRES    L:0x500A,      #0x7         \n"// L0 t1
+        "nop                                 \n"// L0 t1
+        "nop                                 \n"// L0 t2
+        "nop                                 \n"// L0 t3
+        "nop                                 \n"// L0 t4
+        "nop                                 \n"// L0 t5
+        "nop                                 \n"// L0 t6
+        "nop                                 \n"// L0 t7
+        "nop                                 \n"// L0 t8
+                                                //NextBitTest:4+SP = 5. L t13
+//--------------- bit 1 -----------------------------------------
+        "lb_start_bit1:                      \n"//
+        "LD      A,           (L:LedsArray,X)\n"//1
+        "AND     A,             #0x40        \n"//1
+        "JREQ    L:lb_bit1_Send_0            \n"//2 jump to Zero, 1 Stay in One + next nop
+        "lb_bit1_Send_1:                     \n"
+        "nop                                 \n"//1 to have send0 send1 equality
+        "BSET    L:0x500A,      #0x7         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "nop                                 \n"// H t7
+        "nop                                 \n"// H t8
+        "nop                                 \n"// H t9
+        "nop                                 \n"// H t10
+        "nop                                 \n"// H t11
+        "nop                                 \n"// H t12
+        "BRES    L:0x500A,      #0x7         \n"// L t1
+        "nop                                 \n"// L t2
+        "JRA     L:lb_start_bit2             \n"// L JRA:2 t4 
+                                                // L NextBitTest:4  t8
+        "lb_bit1_Send_0:                     \n"//------Send 0 : 400ns High, 850ns Low (6,14) 375ns,875ns
+        "BSET    L:0x500A,      #0x7         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "BRES    L:0x500A,      #0x7         \n"// L t1
+        "nop                                 \n"// L t1
+        "nop                                 \n"// L t2
+        "nop                                 \n"// L t3
+        "nop                                 \n"// L t4
+        "nop                                 \n"// L t5
+        "nop                                 \n"// L t6
+        "nop                                 \n"// L t7
+        "nop                                 \n"// L t8
+        "nop                                 \n"// L t9
+                                                //NextBitTest:4+SP = 5. L t14
+//--------------- bit 2 -----------------------------------------
+        "lb_start_bit2:                      \n"//
+        "LD      A,           (L:LedsArray,X)\n"//1
+        "AND     A,             #0x20        \n"//1
+        "JREQ    L:lb_bit2_Send_0            \n"//2 jump to Zero, 1 Stay in One + next nop
+        "lb_bit2_Send_1:                     \n"
+        "nop                                 \n"//1 to have send0 send1 equality
+        "BSET    L:0x500A,      #0x7         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "nop                                 \n"// H t7
+        "nop                                 \n"// H t8
+        "nop                                 \n"// H t9
+        "nop                                 \n"// H t10
+        "nop                                 \n"// H t11
+        "nop                                 \n"// H t12
+        "BRES    L:0x500A,      #0x7         \n"// L t1
+        "nop                                 \n"// L t2
+        "JRA     L:lb_start_bit3             \n"// L JRA:2 t4 
+                                                // L NextBitTest:4  t8
+        "lb_bit2_Send_0:                     \n"//------Send 0 : 400ns High, 850ns Low (6,14) 375ns,875ns
+        "BSET    L:0x500A,      #0x7         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "BRES    L:0x500A,      #0x7         \n"// L t1
+        "nop                                 \n"// L t1
+        "nop                                 \n"// L t2
+        "nop                                 \n"// L t3
+        "nop                                 \n"// L t4
+        "nop                                 \n"// L t5
+        "nop                                 \n"// L t6
+        "nop                                 \n"// L t7
+        "nop                                 \n"// L t8
+        "nop                                 \n"// L t9
+                                                //NextBitTest:4+SP = 5. L t14
+//--------------- bit 3 -----------------------------------------
+        "lb_start_bit3:                      \n"//
+        "LD      A,           (L:LedsArray,X)\n"//1
+        "AND     A,             #0x10        \n"//1
+        "JREQ    L:lb_bit3_Send_0            \n"//2 jump to Zero, 1 Stay in One + next nop
+        "lb_bit3_Send_1:                     \n"
+        "nop                                 \n"//1 to have send0 send1 equality
+        "BSET    L:0x500A,      #0x7         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "nop                                 \n"// H t7
+        "nop                                 \n"// H t8
+        "nop                                 \n"// H t9
+        "nop                                 \n"// H t10
+        "nop                                 \n"// H t11
+        "nop                                 \n"// H t12
+        "BRES    L:0x500A,      #0x7         \n"// L t1
+        "nop                                 \n"// L t2
+        "JRA     L:lb_start_bit4             \n"// L JRA:2 t4 
+                                                // L NextBitTest:4  t8
+        "lb_bit3_Send_0:                     \n"//------Send 0 : 400ns High, 850ns Low (6,14) 375ns,875ns
+        "BSET    L:0x500A,      #0x7         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "BRES    L:0x500A,      #0x7         \n"// L t1
+        "nop                                 \n"// L t1
+        "nop                                 \n"// L t2
+        "nop                                 \n"// L t3
+        "nop                                 \n"// L t4
+        "nop                                 \n"// L t5
+        "nop                                 \n"// L t6
+        "nop                                 \n"// L t7
+        "nop                                 \n"// L t8
+        "nop                                 \n"// L t9
+                                                //NextBitTest:4+SP = 5. L t14
+//--------------- bit 4 -----------------------------------------
+        "lb_start_bit4:                      \n"//
+        "LD      A,           (L:LedsArray,X)\n"//1
+        "AND     A,             #0x08        \n"//1
+        "JREQ    L:lb_bit4_Send_0            \n"//2 jump to Zero, 1 Stay in One + next nop
+        "lb_bit4_Send_1:                     \n"
+        "nop                                 \n"//1 to have send0 send1 equality
+        "BSET    L:0x500A,      #0x7         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "nop                                 \n"// H t7
+        "nop                                 \n"// H t8
+        "nop                                 \n"// H t9
+        "nop                                 \n"// H t10
+        "nop                                 \n"// H t11
+        "nop                                 \n"// H t12
+        "BRES    L:0x500A,      #0x7         \n"// L t1
+        "nop                                 \n"// L t2
+        "JRA     L:lb_start_bit5             \n"// L JRA:2 t4 
+                                                // L NextBitTest:4  t8
+        "lb_bit4_Send_0:                     \n"//------Send 0 : 400ns High, 850ns Low (6,14) 375ns,875ns
+        "BSET    L:0x500A,      #0x7         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "BRES    L:0x500A,      #0x7         \n"// L t1
+        "nop                                 \n"// L t1
+        "nop                                 \n"// L t2
+        "nop                                 \n"// L t3
+        "nop                                 \n"// L t4
+        "nop                                 \n"// L t5
+        "nop                                 \n"// L t6
+        "nop                                 \n"// L t7
+        "nop                                 \n"// L t8
+        "nop                                 \n"// L t9
+                                                //NextBitTest:4+SP = 5. L t14
+//--------------- bit 5 -----------------------------------------
+        "lb_start_bit5:                      \n"//
+        "LD      A,           (L:LedsArray,X)\n"//1
+        "AND     A,             #0x04        \n"//1
+        "JREQ    L:lb_bit5_Send_0            \n"//2 jump to Zero, 1 Stay in One + next nop
+        "lb_bit5_Send_1:                     \n"
+        "nop                                 \n"//1 to have send0 send1 equality
+        "BSET    L:0x500A,      #0x7         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "nop                                 \n"// H t7
+        "nop                                 \n"// H t8
+        "nop                                 \n"// H t9
+        "nop                                 \n"// H t10
+        "nop                                 \n"// H t11
+        "nop                                 \n"// H t12
+        "BRES    L:0x500A,      #0x7         \n"// L t1
+        "nop                                 \n"// L t2
+        "JRA     L:lb_start_bit6             \n"// L JRA:2 t4 
+                                                // L NextBitTest:4  t8
+        "lb_bit5_Send_0:                     \n"//------Send 0 : 400ns High, 850ns Low (6,14) 375ns,875ns
+        "BSET    L:0x500A,      #0x7         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "BRES    L:0x500A,      #0x7         \n"// L t1
+        "nop                                 \n"// L t1
+        "nop                                 \n"// L t2
+        "nop                                 \n"// L t3
+        "nop                                 \n"// L t4
+        "nop                                 \n"// L t5
+        "nop                                 \n"// L t6
+        "nop                                 \n"// L t7
+        "nop                                 \n"// L t8
+        "nop                                 \n"// L t9
+                                                //NextBitTest:4+SP = 5. L t14
+//--------------- bit 6 -----------------------------------------
+        "lb_start_bit6:                      \n"//
+        "LD      A,           (L:LedsArray,X)\n"//1
+        "AND     A,             #0x02        \n"//1
+        "JREQ    L:lb_bit6_Send_0            \n"//2 jump to Zero, 1 Stay in One + next nop
+        "lb_bit6_Send_1:                     \n"
+        "nop                                 \n"//1 to have send0 send1 equality
+        "BSET    L:0x500A,      #0x7         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "nop                                 \n"// H t7
+        "nop                                 \n"// H t8
+        "nop                                 \n"// H t9
+        "nop                                 \n"// H t10
+        "nop                                 \n"// H t11
+        "nop                                 \n"// H t12
+        "BRES    L:0x500A,      #0x7         \n"// L t1
+        "nop                                 \n"// L t2
+        "JRA     L:lb_start_bit7             \n"// L JRA:2 t4 
+                                                // L NextBitTest:4  t8
+        "lb_bit6_Send_0:                     \n"//------Send 0 : 400ns High, 850ns Low (6,14) 375ns,875ns
+        "BSET    L:0x500A,      #0x7         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "BRES    L:0x500A,      #0x7         \n"// L t1
+        "nop                                 \n"// L t1
+        "nop                                 \n"// L t2
+        "nop                                 \n"// L t3
+        "nop                                 \n"// L t4
+        "nop                                 \n"// L t5
+        "nop                                 \n"// L t6
+        "nop                                 \n"// L t7
+        "nop                                 \n"// L t8
+        "nop                                 \n"// L t9
+                                                //NextBitTest:4+SP = 5. L t14
+//--------------- bit 7 -----------------------------------------
+        "lb_start_bit7:                      \n"//
+        "LD      A,           (L:LedsArray,X)\n"//1
+        "AND     A,             #0x01        \n"//1
+        "JREQ    L:lb_bit7_Send_0            \n"//2 jump to Zero, 1 Stay in One + next nop
+        "lb_bit7_Send_1:                     \n"
+        "nop                                 \n"//1 to have send0 send1 equality
+        "BSET    L:0x500A,      #0x7         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "nop                                 \n"// H t7
+        "nop                                 \n"// H t8
+        "nop                                 \n"// H t9
+        "nop                                 \n"// H t10
+        "nop                                 \n"// H t11
+        "nop                                 \n"// H t12
+        "BRES    L:0x500A,      #0x7         \n"// L t1
+        "DECW    Y                           \n"//2
+        "JREQ    L:lb_exit                   \n"//1 on loop, 2 jmp to exit
+        "JP      L:lb_begin_loop             \n"//5
+                                                // 
+        "lb_bit7_Send_0:                     \n"//------Send 0 : 400ns High, 850ns Low (6,14) 375ns,875ns
+        "BSET    L:0x500A,      #0x7         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "BRES    L:0x500A,      #0x7         \n"// L t1
+        "nop                                 \n"// L t1
+        "nop                                 \n"// L t2
+        "nop                                 \n"// L t3
+        "nop                                 \n"// L t4
+        "nop                                 \n"// L t5
+        "nop                                 \n"// L t6
+                                                // L DECW 2, JREQ 1, 2 = 5 =>   t14
+//--------------------------------------------------------
+//--------------------------------------------------------
+        "DECW    Y                           \n"//2
+        "JREQ    L:lb_exit                   \n"//1 on loop, 2 jmp to exit
+        "JP      L:lb_begin_loop             \n"//5
+        "lb_exit:nop");
+  
+}
+void SendLedsArrayC6()
+{
+  asm(
+        "lb_intiLoop:                          \n"
+        "LDW      X,             #0xFFFF       \n"// set -1 in X, so that first inc gets 0, as inc has to be in the beginning of the loop
+        "LDW      Y,             L:nbLedsBytes \n"//2
+        "lb_begin_loop:                        \n"
+//---------------------------------------------------------------
+//--------------- bit 0 -----------------------------------------
+        "INCW    X                           \n"// L t+2
+        "BSET    L:0x500A,      #0x6         \n"// H t1
+        "lb_start_bit0:                      \n"//
+        "LD      A,           (L:LedsArray,X)\n"// H t2
+        "AND     A,             #0x80        \n"// H t3
+        "JREQ    L:lb_bit0_Send_0            \n"// H0 t4 t5 : 2 jump to Zero, 1 Stay in One + next nop
+        "lb_bit0_Send_1:                     \n"//------Send 1 : 800ns High, 450ns Low (12,8) 750ns,500ns
+        "nop                                 \n"//1 to have send0 send1 equality
+        "nop                                 \n"// H1 t6
+        "nop                                 \n"// H1 t7
+        "nop                                 \n"// H1 t8
+        "nop                                 \n"// H1 t9
+        "nop                                 \n"// H1 t10
+        "nop                                 \n"// H1 t11
+        "nop                                 \n"// H1 t12
+        "BRES    L:0x500A,      #0x6         \n"// L1 t1
+        "nop                                 \n"// L1 t2
+        "JRA     L:lb_start_bit1             \n"// L1 JRA:2 t4 
+                                                // L1 NextBitTest:4  t8
+        "lb_bit0_Send_0:                     \n"//------Send 0 : 400ns High, 850ns Low (7,13) 375ns,875ns
+                                                // H0 t6 in stand of t4
+        "BRES    L:0x500A,      #0x6         \n"// L0 t1
+        "nop                                 \n"// L0 t1
+        "nop                                 \n"// L0 t2
+        "nop                                 \n"// L0 t3
+        "nop                                 \n"// L0 t4
+        "nop                                 \n"// L0 t5
+        "nop                                 \n"// L0 t6
+        "nop                                 \n"// L0 t7
+        "nop                                 \n"// L0 t8
+                                                //NextBitTest:4+SP = 5. L t13
+//--------------- bit 1 -----------------------------------------
+        "lb_start_bit1:                      \n"//
+        "LD      A,           (L:LedsArray,X)\n"//1
+        "AND     A,             #0x40        \n"//1
+        "JREQ    L:lb_bit1_Send_0            \n"//2 jump to Zero, 1 Stay in One + next nop
+        "lb_bit1_Send_1:                     \n"
+        "nop                                 \n"//1 to have send0 send1 equality
+        "BSET    L:0x500A,      #0x6         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "nop                                 \n"// H t7
+        "nop                                 \n"// H t8
+        "nop                                 \n"// H t9
+        "nop                                 \n"// H t10
+        "nop                                 \n"// H t11
+        "nop                                 \n"// H t12
+        "BRES    L:0x500A,      #0x6         \n"// L t1
+        "nop                                 \n"// L t2
+        "JRA     L:lb_start_bit2             \n"// L JRA:2 t4 
+                                                // L NextBitTest:4  t8
+        "lb_bit1_Send_0:                     \n"//------Send 0 : 400ns High, 850ns Low (6,14) 375ns,875ns
+        "BSET    L:0x500A,      #0x6         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "BRES    L:0x500A,      #0x6         \n"// L t1
+        "nop                                 \n"// L t1
+        "nop                                 \n"// L t2
+        "nop                                 \n"// L t3
+        "nop                                 \n"// L t4
+        "nop                                 \n"// L t5
+        "nop                                 \n"// L t6
+        "nop                                 \n"// L t7
+        "nop                                 \n"// L t8
+        "nop                                 \n"// L t9
+                                                //NextBitTest:4+SP = 5. L t14
+//--------------- bit 2 -----------------------------------------
+        "lb_start_bit2:                      \n"//
+        "LD      A,           (L:LedsArray,X)\n"//1
+        "AND     A,             #0x20        \n"//1
+        "JREQ    L:lb_bit2_Send_0            \n"//2 jump to Zero, 1 Stay in One + next nop
+        "lb_bit2_Send_1:                     \n"
+        "nop                                 \n"//1 to have send0 send1 equality
+        "BSET    L:0x500A,      #0x6         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "nop                                 \n"// H t7
+        "nop                                 \n"// H t8
+        "nop                                 \n"// H t9
+        "nop                                 \n"// H t10
+        "nop                                 \n"// H t11
+        "nop                                 \n"// H t12
+        "BRES    L:0x500A,      #0x6         \n"// L t1
+        "nop                                 \n"// L t2
+        "JRA     L:lb_start_bit3             \n"// L JRA:2 t4 
+                                                // L NextBitTest:4  t8
+        "lb_bit2_Send_0:                     \n"//------Send 0 : 400ns High, 850ns Low (6,14) 375ns,875ns
+        "BSET    L:0x500A,      #0x6         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "BRES    L:0x500A,      #0x6         \n"// L t1
+        "nop                                 \n"// L t1
+        "nop                                 \n"// L t2
+        "nop                                 \n"// L t3
+        "nop                                 \n"// L t4
+        "nop                                 \n"// L t5
+        "nop                                 \n"// L t6
+        "nop                                 \n"// L t7
+        "nop                                 \n"// L t8
+        "nop                                 \n"// L t9
+                                                //NextBitTest:4+SP = 5. L t14
+//--------------- bit 3 -----------------------------------------
+        "lb_start_bit3:                      \n"//
+        "LD      A,           (L:LedsArray,X)\n"//1
+        "AND     A,             #0x10        \n"//1
+        "JREQ    L:lb_bit3_Send_0            \n"//2 jump to Zero, 1 Stay in One + next nop
+        "lb_bit3_Send_1:                     \n"
+        "nop                                 \n"//1 to have send0 send1 equality
+        "BSET    L:0x500A,      #0x6         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "nop                                 \n"// H t7
+        "nop                                 \n"// H t8
+        "nop                                 \n"// H t9
+        "nop                                 \n"// H t10
+        "nop                                 \n"// H t11
+        "nop                                 \n"// H t12
+        "BRES    L:0x500A,      #0x6         \n"// L t1
+        "nop                                 \n"// L t2
+        "JRA     L:lb_start_bit4             \n"// L JRA:2 t4 
+                                                // L NextBitTest:4  t8
+        "lb_bit3_Send_0:                     \n"//------Send 0 : 400ns High, 850ns Low (6,14) 375ns,875ns
+        "BSET    L:0x500A,      #0x6         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "BRES    L:0x500A,      #0x6         \n"// L t1
+        "nop                                 \n"// L t1
+        "nop                                 \n"// L t2
+        "nop                                 \n"// L t3
+        "nop                                 \n"// L t4
+        "nop                                 \n"// L t5
+        "nop                                 \n"// L t6
+        "nop                                 \n"// L t7
+        "nop                                 \n"// L t8
+        "nop                                 \n"// L t9
+                                                //NextBitTest:4+SP = 5. L t14
+//--------------- bit 4 -----------------------------------------
+        "lb_start_bit4:                      \n"//
+        "LD      A,           (L:LedsArray,X)\n"//1
+        "AND     A,             #0x08        \n"//1
+        "JREQ    L:lb_bit4_Send_0            \n"//2 jump to Zero, 1 Stay in One + next nop
+        "lb_bit4_Send_1:                     \n"
+        "nop                                 \n"//1 to have send0 send1 equality
+        "BSET    L:0x500A,      #0x6         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "nop                                 \n"// H t7
+        "nop                                 \n"// H t8
+        "nop                                 \n"// H t9
+        "nop                                 \n"// H t10
+        "nop                                 \n"// H t11
+        "nop                                 \n"// H t12
+        "BRES    L:0x500A,      #0x6         \n"// L t1
+        "nop                                 \n"// L t2
+        "JRA     L:lb_start_bit5             \n"// L JRA:2 t4 
+                                                // L NextBitTest:4  t8
+        "lb_bit4_Send_0:                     \n"//------Send 0 : 400ns High, 850ns Low (6,14) 375ns,875ns
+        "BSET    L:0x500A,      #0x6         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "BRES    L:0x500A,      #0x6         \n"// L t1
+        "nop                                 \n"// L t1
+        "nop                                 \n"// L t2
+        "nop                                 \n"// L t3
+        "nop                                 \n"// L t4
+        "nop                                 \n"// L t5
+        "nop                                 \n"// L t6
+        "nop                                 \n"// L t7
+        "nop                                 \n"// L t8
+        "nop                                 \n"// L t9
+                                                //NextBitTest:4+SP = 5. L t14
+//--------------- bit 5 -----------------------------------------
+        "lb_start_bit5:                      \n"//
+        "LD      A,           (L:LedsArray,X)\n"//1
+        "AND     A,             #0x04        \n"//1
+        "JREQ    L:lb_bit5_Send_0            \n"//2 jump to Zero, 1 Stay in One + next nop
+        "lb_bit5_Send_1:                     \n"
+        "nop                                 \n"//1 to have send0 send1 equality
+        "BSET    L:0x500A,      #0x6         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "nop                                 \n"// H t7
+        "nop                                 \n"// H t8
+        "nop                                 \n"// H t9
+        "nop                                 \n"// H t10
+        "nop                                 \n"// H t11
+        "nop                                 \n"// H t12
+        "BRES    L:0x500A,      #0x6         \n"// L t1
+        "nop                                 \n"// L t2
+        "JRA     L:lb_start_bit6             \n"// L JRA:2 t4 
+                                                // L NextBitTest:4  t8
+        "lb_bit5_Send_0:                     \n"//------Send 0 : 400ns High, 850ns Low (6,14) 375ns,875ns
+        "BSET    L:0x500A,      #0x6         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "BRES    L:0x500A,      #0x6         \n"// L t1
+        "nop                                 \n"// L t1
+        "nop                                 \n"// L t2
+        "nop                                 \n"// L t3
+        "nop                                 \n"// L t4
+        "nop                                 \n"// L t5
+        "nop                                 \n"// L t6
+        "nop                                 \n"// L t7
+        "nop                                 \n"// L t8
+        "nop                                 \n"// L t9
+                                                //NextBitTest:4+SP = 5. L t14
+//--------------- bit 6 -----------------------------------------
+        "lb_start_bit6:                      \n"//
+        "LD      A,           (L:LedsArray,X)\n"//1
+        "AND     A,             #0x02        \n"//1
+        "JREQ    L:lb_bit6_Send_0            \n"//2 jump to Zero, 1 Stay in One + next nop
+        "lb_bit6_Send_1:                     \n"
+        "nop                                 \n"//1 to have send0 send1 equality
+        "BSET    L:0x500A,      #0x6         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "nop                                 \n"// H t7
+        "nop                                 \n"// H t8
+        "nop                                 \n"// H t9
+        "nop                                 \n"// H t10
+        "nop                                 \n"// H t11
+        "nop                                 \n"// H t12
+        "BRES    L:0x500A,      #0x6         \n"// L t1
+        "nop                                 \n"// L t2
+        "JRA     L:lb_start_bit7             \n"// L JRA:2 t4 
+                                                // L NextBitTest:4  t8
+        "lb_bit6_Send_0:                     \n"//------Send 0 : 400ns High, 850ns Low (6,14) 375ns,875ns
+        "BSET    L:0x500A,      #0x6         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "BRES    L:0x500A,      #0x6         \n"// L t1
+        "nop                                 \n"// L t1
+        "nop                                 \n"// L t2
+        "nop                                 \n"// L t3
+        "nop                                 \n"// L t4
+        "nop                                 \n"// L t5
+        "nop                                 \n"// L t6
+        "nop                                 \n"// L t7
+        "nop                                 \n"// L t8
+        "nop                                 \n"// L t9
+                                                //NextBitTest:4+SP = 5. L t14
+//--------------- bit 7 -----------------------------------------
+        "lb_start_bit7:                      \n"//
+        "LD      A,           (L:LedsArray,X)\n"//1
+        "AND     A,             #0x01        \n"//1
+        "JREQ    L:lb_bit7_Send_0            \n"//2 jump to Zero, 1 Stay in One + next nop
+        "lb_bit7_Send_1:                     \n"
+        "nop                                 \n"//1 to have send0 send1 equality
+        "BSET    L:0x500A,      #0x6         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "nop                                 \n"// H t7
+        "nop                                 \n"// H t8
+        "nop                                 \n"// H t9
+        "nop                                 \n"// H t10
+        "nop                                 \n"// H t11
+        "nop                                 \n"// H t12
+        "BRES    L:0x500A,      #0x6         \n"// L t1
+        "DECW    Y                           \n"//2
+        "JREQ    L:lb_exit                   \n"//1 on loop, 2 jmp to exit
+        "JP      L:lb_begin_loop             \n"//5
+                                                // 
+        "lb_bit7_Send_0:                     \n"//------Send 0 : 400ns High, 850ns Low (6,14) 375ns,875ns
+        "BSET    L:0x500A,      #0x6         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "BRES    L:0x500A,      #0x6         \n"// L t1
+        "nop                                 \n"// L t1
+        "nop                                 \n"// L t2
+        "nop                                 \n"// L t3
+        "nop                                 \n"// L t4
+        "nop                                 \n"// L t5
+        "nop                                 \n"// L t6
+                                                // L DECW 2, JREQ 1, 2 = 5 =>   t14
+//--------------------------------------------------------
+//--------------------------------------------------------
+        "DECW    Y                           \n"//2
+        "JREQ    L:lb_exit                   \n"//1 on loop, 2 jmp to exit
+        "JP      L:lb_begin_loop             \n"//5
+        "lb_exit:nop");
+  
+}
+void SendLedsArrayD1()
+{
+  asm(
+        "lb_intiLoop:                          \n"
+        "LDW      X,             #0xFFFF       \n"// set -1 in X, so that first inc gets 0, as inc has to be in the beginning of the loop
+        "LDW      Y,             L:nbLedsBytes \n"//2
+        "lb_begin_loop:                        \n"
+//---------------------------------------------------------------
+//--------------- bit 0 -----------------------------------------
+        "INCW    X                           \n"// L t+2
+        "BSET    L:0x500F,      #0x1         \n"// H t1
+        "lb_start_bit0:                      \n"//
+        "LD      A,           (L:LedsArray,X)\n"// H t2
+        "AND     A,             #0x80        \n"// H t3
+        "JREQ    L:lb_bit0_Send_0            \n"// H0 t4 t5 : 2 jump to Zero, 1 Stay in One + next nop
+        "lb_bit0_Send_1:                     \n"//------Send 1 : 800ns High, 450ns Low (12,8) 750ns,500ns
+        "nop                                 \n"//1 to have send0 send1 equality
+        "nop                                 \n"// H1 t6
+        "nop                                 \n"// H1 t7
+        "nop                                 \n"// H1 t8
+        "nop                                 \n"// H1 t9
+        "nop                                 \n"// H1 t10
+        "nop                                 \n"// H1 t11
+        "nop                                 \n"// H1 t12
+        "BRES    L:0x500F,      #0x1         \n"// L1 t1
+        "nop                                 \n"// L1 t2
+        "JRA     L:lb_start_bit1             \n"// L1 JRA:2 t4 
+                                                // L1 NextBitTest:4  t8
+        "lb_bit0_Send_0:                     \n"//------Send 0 : 400ns High, 850ns Low (7,13) 375ns,875ns
+                                                // H0 t6 in stand of t4
+        "BRES    L:0x500F,      #0x1         \n"// L0 t1
+        "nop                                 \n"// L0 t1
+        "nop                                 \n"// L0 t2
+        "nop                                 \n"// L0 t3
+        "nop                                 \n"// L0 t4
+        "nop                                 \n"// L0 t5
+        "nop                                 \n"// L0 t6
+        "nop                                 \n"// L0 t7
+        "nop                                 \n"// L0 t8
+                                                //NextBitTest:4+SP = 5. L t13
+//--------------- bit 1 -----------------------------------------
+        "lb_start_bit1:                      \n"//
+        "LD      A,           (L:LedsArray,X)\n"//1
+        "AND     A,             #0x40        \n"//1
+        "JREQ    L:lb_bit1_Send_0            \n"//2 jump to Zero, 1 Stay in One + next nop
+        "lb_bit1_Send_1:                     \n"
+        "nop                                 \n"//1 to have send0 send1 equality
+        "BSET    L:0x500F,      #0x1         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "nop                                 \n"// H t7
+        "nop                                 \n"// H t8
+        "nop                                 \n"// H t9
+        "nop                                 \n"// H t10
+        "nop                                 \n"// H t11
+        "nop                                 \n"// H t12
+        "BRES    L:0x500F,      #0x1         \n"// L t1
+        "nop                                 \n"// L t2
+        "JRA     L:lb_start_bit2             \n"// L JRA:2 t4 
+                                                // L NextBitTest:4  t8
+        "lb_bit1_Send_0:                     \n"//------Send 0 : 400ns High, 850ns Low (6,14) 375ns,875ns
+        "BSET    L:0x500F,      #0x1         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "BRES    L:0x500F,      #0x1         \n"// L t1
+        "nop                                 \n"// L t1
+        "nop                                 \n"// L t2
+        "nop                                 \n"// L t3
+        "nop                                 \n"// L t4
+        "nop                                 \n"// L t5
+        "nop                                 \n"// L t6
+        "nop                                 \n"// L t7
+        "nop                                 \n"// L t8
+        "nop                                 \n"// L t9
+                                                //NextBitTest:4+SP = 5. L t14
+//--------------- bit 2 -----------------------------------------
+        "lb_start_bit2:                      \n"//
+        "LD      A,           (L:LedsArray,X)\n"//1
+        "AND     A,             #0x20        \n"//1
+        "JREQ    L:lb_bit2_Send_0            \n"//2 jump to Zero, 1 Stay in One + next nop
+        "lb_bit2_Send_1:                     \n"
+        "nop                                 \n"//1 to have send0 send1 equality
+        "BSET    L:0x500F,      #0x1         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "nop                                 \n"// H t7
+        "nop                                 \n"// H t8
+        "nop                                 \n"// H t9
+        "nop                                 \n"// H t10
+        "nop                                 \n"// H t11
+        "nop                                 \n"// H t12
+        "BRES    L:0x500F,      #0x1         \n"// L t1
+        "nop                                 \n"// L t2
+        "JRA     L:lb_start_bit3             \n"// L JRA:2 t4 
+                                                // L NextBitTest:4  t8
+        "lb_bit2_Send_0:                     \n"//------Send 0 : 400ns High, 850ns Low (6,14) 375ns,875ns
+        "BSET    L:0x500F,      #0x1         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "BRES    L:0x500F,      #0x1         \n"// L t1
+        "nop                                 \n"// L t1
+        "nop                                 \n"// L t2
+        "nop                                 \n"// L t3
+        "nop                                 \n"// L t4
+        "nop                                 \n"// L t5
+        "nop                                 \n"// L t6
+        "nop                                 \n"// L t7
+        "nop                                 \n"// L t8
+        "nop                                 \n"// L t9
+                                                //NextBitTest:4+SP = 5. L t14
+//--------------- bit 3 -----------------------------------------
+        "lb_start_bit3:                      \n"//
+        "LD      A,           (L:LedsArray,X)\n"//1
+        "AND     A,             #0x10        \n"//1
+        "JREQ    L:lb_bit3_Send_0            \n"//2 jump to Zero, 1 Stay in One + next nop
+        "lb_bit3_Send_1:                     \n"
+        "nop                                 \n"//1 to have send0 send1 equality
+        "BSET    L:0x500F,      #0x1         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "nop                                 \n"// H t7
+        "nop                                 \n"// H t8
+        "nop                                 \n"// H t9
+        "nop                                 \n"// H t10
+        "nop                                 \n"// H t11
+        "nop                                 \n"// H t12
+        "BRES    L:0x500F,      #0x1         \n"// L t1
+        "nop                                 \n"// L t2
+        "JRA     L:lb_start_bit4             \n"// L JRA:2 t4 
+                                                // L NextBitTest:4  t8
+        "lb_bit3_Send_0:                     \n"//------Send 0 : 400ns High, 850ns Low (6,14) 375ns,875ns
+        "BSET    L:0x500F,      #0x1         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "BRES    L:0x500F,      #0x1         \n"// L t1
+        "nop                                 \n"// L t1
+        "nop                                 \n"// L t2
+        "nop                                 \n"// L t3
+        "nop                                 \n"// L t4
+        "nop                                 \n"// L t5
+        "nop                                 \n"// L t6
+        "nop                                 \n"// L t7
+        "nop                                 \n"// L t8
+        "nop                                 \n"// L t9
+                                                //NextBitTest:4+SP = 5. L t14
+//--------------- bit 4 -----------------------------------------
+        "lb_start_bit4:                      \n"//
+        "LD      A,           (L:LedsArray,X)\n"//1
+        "AND     A,             #0x08        \n"//1
+        "JREQ    L:lb_bit4_Send_0            \n"//2 jump to Zero, 1 Stay in One + next nop
+        "lb_bit4_Send_1:                     \n"
+        "nop                                 \n"//1 to have send0 send1 equality
+        "BSET    L:0x500F,      #0x1         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "nop                                 \n"// H t7
+        "nop                                 \n"// H t8
+        "nop                                 \n"// H t9
+        "nop                                 \n"// H t10
+        "nop                                 \n"// H t11
+        "nop                                 \n"// H t12
+        "BRES    L:0x500F,      #0x1         \n"// L t1
+        "nop                                 \n"// L t2
+        "JRA     L:lb_start_bit5             \n"// L JRA:2 t4 
+                                                // L NextBitTest:4  t8
+        "lb_bit4_Send_0:                     \n"//------Send 0 : 400ns High, 850ns Low (6,14) 375ns,875ns
+        "BSET    L:0x500F,      #0x1         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "BRES    L:0x500F,      #0x1         \n"// L t1
+        "nop                                 \n"// L t1
+        "nop                                 \n"// L t2
+        "nop                                 \n"// L t3
+        "nop                                 \n"// L t4
+        "nop                                 \n"// L t5
+        "nop                                 \n"// L t6
+        "nop                                 \n"// L t7
+        "nop                                 \n"// L t8
+        "nop                                 \n"// L t9
+                                                //NextBitTest:4+SP = 5. L t14
+//--------------- bit 5 -----------------------------------------
+        "lb_start_bit5:                      \n"//
+        "LD      A,           (L:LedsArray,X)\n"//1
+        "AND     A,             #0x04        \n"//1
+        "JREQ    L:lb_bit5_Send_0            \n"//2 jump to Zero, 1 Stay in One + next nop
+        "lb_bit5_Send_1:                     \n"
+        "nop                                 \n"//1 to have send0 send1 equality
+        "BSET    L:0x500F,      #0x1         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "nop                                 \n"// H t7
+        "nop                                 \n"// H t8
+        "nop                                 \n"// H t9
+        "nop                                 \n"// H t10
+        "nop                                 \n"// H t11
+        "nop                                 \n"// H t12
+        "BRES    L:0x500F,      #0x1         \n"// L t1
+        "nop                                 \n"// L t2
+        "JRA     L:lb_start_bit6             \n"// L JRA:2 t4 
+                                                // L NextBitTest:4  t8
+        "lb_bit5_Send_0:                     \n"//------Send 0 : 400ns High, 850ns Low (6,14) 375ns,875ns
+        "BSET    L:0x500F,      #0x1         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "BRES    L:0x500F,      #0x1         \n"// L t1
+        "nop                                 \n"// L t1
+        "nop                                 \n"// L t2
+        "nop                                 \n"// L t3
+        "nop                                 \n"// L t4
+        "nop                                 \n"// L t5
+        "nop                                 \n"// L t6
+        "nop                                 \n"// L t7
+        "nop                                 \n"// L t8
+        "nop                                 \n"// L t9
+                                                //NextBitTest:4+SP = 5. L t14
+//--------------- bit 6 -----------------------------------------
+        "lb_start_bit6:                      \n"//
+        "LD      A,           (L:LedsArray,X)\n"//1
+        "AND     A,             #0x02        \n"//1
+        "JREQ    L:lb_bit6_Send_0            \n"//2 jump to Zero, 1 Stay in One + next nop
+        "lb_bit6_Send_1:                     \n"
+        "nop                                 \n"//1 to have send0 send1 equality
+        "BSET    L:0x500F,      #0x1         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "nop                                 \n"// H t7
+        "nop                                 \n"// H t8
+        "nop                                 \n"// H t9
+        "nop                                 \n"// H t10
+        "nop                                 \n"// H t11
+        "nop                                 \n"// H t12
+        "BRES    L:0x500F,      #0x1         \n"// L t1
+        "nop                                 \n"// L t2
+        "JRA     L:lb_start_bit7             \n"// L JRA:2 t4 
+                                                // L NextBitTest:4  t8
+        "lb_bit6_Send_0:                     \n"//------Send 0 : 400ns High, 850ns Low (6,14) 375ns,875ns
+        "BSET    L:0x500F,      #0x1         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "BRES    L:0x500F,      #0x1         \n"// L t1
+        "nop                                 \n"// L t1
+        "nop                                 \n"// L t2
+        "nop                                 \n"// L t3
+        "nop                                 \n"// L t4
+        "nop                                 \n"// L t5
+        "nop                                 \n"// L t6
+        "nop                                 \n"// L t7
+        "nop                                 \n"// L t8
+        "nop                                 \n"// L t9
+                                                //NextBitTest:4+SP = 5. L t14
+//--------------- bit 7 -----------------------------------------
+        "lb_start_bit7:                      \n"//
+        "LD      A,           (L:LedsArray,X)\n"//1
+        "AND     A,             #0x01        \n"//1
+        "JREQ    L:lb_bit7_Send_0            \n"//2 jump to Zero, 1 Stay in One + next nop
+        "lb_bit7_Send_1:                     \n"
+        "nop                                 \n"//1 to have send0 send1 equality
+        "BSET    L:0x500F,      #0x1         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "nop                                 \n"// H t7
+        "nop                                 \n"// H t8
+        "nop                                 \n"// H t9
+        "nop                                 \n"// H t10
+        "nop                                 \n"// H t11
+        "nop                                 \n"// H t12
+        "BRES    L:0x500F,      #0x1         \n"// L t1
+        "DECW    Y                           \n"//2
+        "JREQ    L:lb_exit                   \n"//1 on loop, 2 jmp to exit
+        "JP      L:lb_begin_loop             \n"//5
+                                                // 
+        "lb_bit7_Send_0:                     \n"//------Send 0 : 400ns High, 850ns Low (6,14) 375ns,875ns
+        "BSET    L:0x500F,      #0x1         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "BRES    L:0x500F,      #0x1         \n"// L t1
+        "nop                                 \n"// L t1
+        "nop                                 \n"// L t2
+        "nop                                 \n"// L t3
+        "nop                                 \n"// L t4
+        "nop                                 \n"// L t5
+        "nop                                 \n"// L t6
+                                                // L DECW 2, JREQ 1, 2 = 5 =>   t14
+//--------------------------------------------------------
+//--------------------------------------------------------
+        "DECW    Y                           \n"//2
+        "JREQ    L:lb_exit                   \n"//1 on loop, 2 jmp to exit
+        "JP      L:lb_begin_loop             \n"//5
+        "lb_exit:nop");
+  
+}
+
+void SendLedsArrayC5()
+{
+  asm(
+        "lb_intiLoop:                          \n"
+        "LDW      X,             #0xFFFF       \n"// set -1 in X, so that first inc gets 0, as inc has to be in the beginning of the loop
+        "LDW      Y,             L:nbLedsBytes \n"//2
+        "lb_begin_loop:                        \n"
+//---------------------------------------------------------------
+//--------------- bit 0 -----------------------------------------
+        "INCW    X                           \n"// L t+2
+        "BSET    L:0x500A,      #0x5         \n"// H t1
+        "lb_start_bit0:                      \n"//
+        "LD      A,           (L:LedsArray,X)\n"// H t2
+        "AND     A,             #0x80        \n"// H t3
+        "JREQ    L:lb_bit0_Send_0            \n"// H0 t4 t5 : 2 jump to Zero, 1 Stay in One + next nop
+        "lb_bit0_Send_1:                     \n"//------Send 1 : 800ns High, 450ns Low (12,8) 750ns,500ns
+        "nop                                 \n"//1 to have send0 send1 equality
+        "nop                                 \n"// H1 t6
+        "nop                                 \n"// H1 t7
+        "nop                                 \n"// H1 t8
+        "nop                                 \n"// H1 t9
+        "nop                                 \n"// H1 t10
+        "nop                                 \n"// H1 t11
+        "nop                                 \n"// H1 t12
+        "BRES    L:0x500A,      #0x5         \n"// L1 t1
+        "nop                                 \n"// L1 t2
+        "JRA     L:lb_start_bit1             \n"// L1 JRA:2 t4 
+                                                // L1 NextBitTest:4  t8
+        "lb_bit0_Send_0:                     \n"//------Send 0 : 400ns High, 850ns Low (7,13) 375ns,875ns
+                                                // H0 t6 in stand of t4
+        "BRES    L:0x500A,      #0x5         \n"// L0 t1
+        "nop                                 \n"// L0 t1
+        "nop                                 \n"// L0 t2
+        "nop                                 \n"// L0 t3
+        "nop                                 \n"// L0 t4
+        "nop                                 \n"// L0 t5
+        "nop                                 \n"// L0 t6
+        "nop                                 \n"// L0 t7
+        "nop                                 \n"// L0 t8
+                                                //NextBitTest:4+SP = 5. L t13
+//--------------- bit 1 -----------------------------------------
+        "lb_start_bit1:                      \n"//
+        "LD      A,           (L:LedsArray,X)\n"//1
+        "AND     A,             #0x40        \n"//1
+        "JREQ    L:lb_bit1_Send_0            \n"//2 jump to Zero, 1 Stay in One + next nop
+        "lb_bit1_Send_1:                     \n"
+        "nop                                 \n"//1 to have send0 send1 equality
+        "BSET    L:0x500A,      #0x5         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "nop                                 \n"// H t7
+        "nop                                 \n"// H t8
+        "nop                                 \n"// H t9
+        "nop                                 \n"// H t10
+        "nop                                 \n"// H t11
+        "nop                                 \n"// H t12
+        "BRES    L:0x500A,      #0x5         \n"// L t1
+        "nop                                 \n"// L t2
+        "JRA     L:lb_start_bit2             \n"// L JRA:2 t4 
+                                                // L NextBitTest:4  t8
+        "lb_bit1_Send_0:                     \n"//------Send 0 : 400ns High, 850ns Low (6,14) 375ns,875ns
+        "BSET    L:0x500A,      #0x5         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "BRES    L:0x500A,      #0x5         \n"// L t1
+        "nop                                 \n"// L t1
+        "nop                                 \n"// L t2
+        "nop                                 \n"// L t3
+        "nop                                 \n"// L t4
+        "nop                                 \n"// L t5
+        "nop                                 \n"// L t6
+        "nop                                 \n"// L t7
+        "nop                                 \n"// L t8
+        "nop                                 \n"// L t9
+                                                //NextBitTest:4+SP = 5. L t14
+//--------------- bit 2 -----------------------------------------
+        "lb_start_bit2:                      \n"//
+        "LD      A,           (L:LedsArray,X)\n"//1
+        "AND     A,             #0x20        \n"//1
+        "JREQ    L:lb_bit2_Send_0            \n"//2 jump to Zero, 1 Stay in One + next nop
+        "lb_bit2_Send_1:                     \n"
+        "nop                                 \n"//1 to have send0 send1 equality
+        "BSET    L:0x500A,      #0x5         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "nop                                 \n"// H t7
+        "nop                                 \n"// H t8
+        "nop                                 \n"// H t9
+        "nop                                 \n"// H t10
+        "nop                                 \n"// H t11
+        "nop                                 \n"// H t12
+        "BRES    L:0x500A,      #0x5         \n"// L t1
+        "nop                                 \n"// L t2
+        "JRA     L:lb_start_bit3             \n"// L JRA:2 t4 
+                                                // L NextBitTest:4  t8
+        "lb_bit2_Send_0:                     \n"//------Send 0 : 400ns High, 850ns Low (6,14) 375ns,875ns
+        "BSET    L:0x500A,      #0x5         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "BRES    L:0x500A,      #0x5         \n"// L t1
+        "nop                                 \n"// L t1
+        "nop                                 \n"// L t2
+        "nop                                 \n"// L t3
+        "nop                                 \n"// L t4
+        "nop                                 \n"// L t5
+        "nop                                 \n"// L t6
+        "nop                                 \n"// L t7
+        "nop                                 \n"// L t8
+        "nop                                 \n"// L t9
+                                                //NextBitTest:4+SP = 5. L t14
+//--------------- bit 3 -----------------------------------------
+        "lb_start_bit3:                      \n"//
+        "LD      A,           (L:LedsArray,X)\n"//1
+        "AND     A,             #0x10        \n"//1
+        "JREQ    L:lb_bit3_Send_0            \n"//2 jump to Zero, 1 Stay in One + next nop
+        "lb_bit3_Send_1:                     \n"
+        "nop                                 \n"//1 to have send0 send1 equality
+        "BSET    L:0x500A,      #0x5         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "nop                                 \n"// H t7
+        "nop                                 \n"// H t8
+        "nop                                 \n"// H t9
+        "nop                                 \n"// H t10
+        "nop                                 \n"// H t11
+        "nop                                 \n"// H t12
+        "BRES    L:0x500A,      #0x5         \n"// L t1
+        "nop                                 \n"// L t2
+        "JRA     L:lb_start_bit4             \n"// L JRA:2 t4 
+                                                // L NextBitTest:4  t8
+        "lb_bit3_Send_0:                     \n"//------Send 0 : 400ns High, 850ns Low (6,14) 375ns,875ns
+        "BSET    L:0x500A,      #0x5         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "BRES    L:0x500A,      #0x5         \n"// L t1
+        "nop                                 \n"// L t1
+        "nop                                 \n"// L t2
+        "nop                                 \n"// L t3
+        "nop                                 \n"// L t4
+        "nop                                 \n"// L t5
+        "nop                                 \n"// L t6
+        "nop                                 \n"// L t7
+        "nop                                 \n"// L t8
+        "nop                                 \n"// L t9
+                                                //NextBitTest:4+SP = 5. L t14
+//--------------- bit 4 -----------------------------------------
+        "lb_start_bit4:                      \n"//
+        "LD      A,           (L:LedsArray,X)\n"//1
+        "AND     A,             #0x08        \n"//1
+        "JREQ    L:lb_bit4_Send_0            \n"//2 jump to Zero, 1 Stay in One + next nop
+        "lb_bit4_Send_1:                     \n"
+        "nop                                 \n"//1 to have send0 send1 equality
+        "BSET    L:0x500A,      #0x5         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "nop                                 \n"// H t7
+        "nop                                 \n"// H t8
+        "nop                                 \n"// H t9
+        "nop                                 \n"// H t10
+        "nop                                 \n"// H t11
+        "nop                                 \n"// H t12
+        "BRES    L:0x500A,      #0x5         \n"// L t1
+        "nop                                 \n"// L t2
+        "JRA     L:lb_start_bit5             \n"// L JRA:2 t4 
+                                                // L NextBitTest:4  t8
+        "lb_bit4_Send_0:                     \n"//------Send 0 : 400ns High, 850ns Low (6,14) 375ns,875ns
+        "BSET    L:0x500A,      #0x5         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "BRES    L:0x500A,      #0x5         \n"// L t1
+        "nop                                 \n"// L t1
+        "nop                                 \n"// L t2
+        "nop                                 \n"// L t3
+        "nop                                 \n"// L t4
+        "nop                                 \n"// L t5
+        "nop                                 \n"// L t6
+        "nop                                 \n"// L t7
+        "nop                                 \n"// L t8
+        "nop                                 \n"// L t9
+                                                //NextBitTest:4+SP = 5. L t14
+//--------------- bit 5 -----------------------------------------
+        "lb_start_bit5:                      \n"//
+        "LD      A,           (L:LedsArray,X)\n"//1
+        "AND     A,             #0x04        \n"//1
+        "JREQ    L:lb_bit5_Send_0            \n"//2 jump to Zero, 1 Stay in One + next nop
+        "lb_bit5_Send_1:                     \n"
+        "nop                                 \n"//1 to have send0 send1 equality
+        "BSET    L:0x500A,      #0x5         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "nop                                 \n"// H t7
+        "nop                                 \n"// H t8
+        "nop                                 \n"// H t9
+        "nop                                 \n"// H t10
+        "nop                                 \n"// H t11
+        "nop                                 \n"// H t12
+        "BRES    L:0x500A,      #0x5         \n"// L t1
+        "nop                                 \n"// L t2
+        "JRA     L:lb_start_bit6             \n"// L JRA:2 t4 
+                                                // L NextBitTest:4  t8
+        "lb_bit5_Send_0:                     \n"//------Send 0 : 400ns High, 850ns Low (6,14) 375ns,875ns
+        "BSET    L:0x500A,      #0x5         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "BRES    L:0x500A,      #0x5         \n"// L t1
+        "nop                                 \n"// L t1
+        "nop                                 \n"// L t2
+        "nop                                 \n"// L t3
+        "nop                                 \n"// L t4
+        "nop                                 \n"// L t5
+        "nop                                 \n"// L t6
+        "nop                                 \n"// L t7
+        "nop                                 \n"// L t8
+        "nop                                 \n"// L t9
+                                                //NextBitTest:4+SP = 5. L t14
+//--------------- bit 6 -----------------------------------------
+        "lb_start_bit6:                      \n"//
+        "LD      A,           (L:LedsArray,X)\n"//1
+        "AND     A,             #0x02        \n"//1
+        "JREQ    L:lb_bit6_Send_0            \n"//2 jump to Zero, 1 Stay in One + next nop
+        "lb_bit6_Send_1:                     \n"
+        "nop                                 \n"//1 to have send0 send1 equality
+        "BSET    L:0x500A,      #0x5         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "nop                                 \n"// H t7
+        "nop                                 \n"// H t8
+        "nop                                 \n"// H t9
+        "nop                                 \n"// H t10
+        "nop                                 \n"// H t11
+        "nop                                 \n"// H t12
+        "BRES    L:0x500A,      #0x5         \n"// L t1
+        "nop                                 \n"// L t2
+        "JRA     L:lb_start_bit7             \n"// L JRA:2 t4 
+                                                // L NextBitTest:4  t8
+        "lb_bit6_Send_0:                     \n"//------Send 0 : 400ns High, 850ns Low (6,14) 375ns,875ns
+        "BSET    L:0x500A,      #0x5         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "BRES    L:0x500A,      #0x5         \n"// L t1
+        "nop                                 \n"// L t1
+        "nop                                 \n"// L t2
+        "nop                                 \n"// L t3
+        "nop                                 \n"// L t4
+        "nop                                 \n"// L t5
+        "nop                                 \n"// L t6
+        "nop                                 \n"// L t7
+        "nop                                 \n"// L t8
+        "nop                                 \n"// L t9
+                                                //NextBitTest:4+SP = 5. L t14
+//--------------- bit 7 -----------------------------------------
+        "lb_start_bit7:                      \n"//
+        "LD      A,           (L:LedsArray,X)\n"//1
+        "AND     A,             #0x01        \n"//1
+        "JREQ    L:lb_bit7_Send_0            \n"//2 jump to Zero, 1 Stay in One + next nop
+        "lb_bit7_Send_1:                     \n"
+        "nop                                 \n"//1 to have send0 send1 equality
+        "BSET    L:0x500A,      #0x5         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "nop                                 \n"// H t7
+        "nop                                 \n"// H t8
+        "nop                                 \n"// H t9
+        "nop                                 \n"// H t10
+        "nop                                 \n"// H t11
+        "nop                                 \n"// H t12
+        "BRES    L:0x500A,      #0x5         \n"// L t1
+        "DECW    Y                           \n"//2
+        "JREQ    L:lb_exit                   \n"//1 on loop, 2 jmp to exit
+        "JP      L:lb_begin_loop             \n"//5
+                                                // 
+        "lb_bit7_Send_0:                     \n"//------Send 0 : 400ns High, 850ns Low (6,14) 375ns,875ns
+        "BSET    L:0x500A,      #0x5         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "BRES    L:0x500A,      #0x5         \n"// L t1
+        "nop                                 \n"// L t1
+        "nop                                 \n"// L t2
+        "nop                                 \n"// L t3
+        "nop                                 \n"// L t4
+        "nop                                 \n"// L t5
+        "nop                                 \n"// L t6
+                                                // L DECW 2, JREQ 1, 2 = 5 =>   t14
+//--------------------------------------------------------
+//--------------------------------------------------------
+        "DECW    Y                           \n"//2
+        "JREQ    L:lb_exit                   \n"//1 on loop, 2 jmp to exit
+        "JP      L:lb_begin_loop             \n"//5
+        "lb_exit:nop");
+  
+}
+
+void SendLedsArrayC4()
+{
+  asm(
+        "lb_intiLoop:                          \n"
+        "LDW      X,             #0xFFFF       \n"// set -1 in X, so that first inc gets 0, as inc has to be in the beginning of the loop
+        "LDW      Y,             L:nbLedsBytes \n"//2
+        "lb_begin_loop:                        \n"
+//---------------------------------------------------------------
+//--------------- bit 0 -----------------------------------------
+        "INCW    X                           \n"// L t+2
+        "BSET    L:0x500A,      #0x4         \n"// H t1
+        "lb_start_bit0:                      \n"//
+        "LD      A,           (L:LedsArray,X)\n"// H t2
+        "AND     A,             #0x80        \n"// H t3
+        "JREQ    L:lb_bit0_Send_0            \n"// H0 t4 t5 : 2 jump to Zero, 1 Stay in One + next nop
+        "lb_bit0_Send_1:                     \n"//------Send 1 : 800ns High, 450ns Low (12,8) 750ns,500ns
+        "nop                                 \n"//1 to have send0 send1 equality
+        "nop                                 \n"// H1 t6
+        "nop                                 \n"// H1 t7
+        "nop                                 \n"// H1 t8
+        "nop                                 \n"// H1 t9
+        "nop                                 \n"// H1 t10
+        "nop                                 \n"// H1 t11
+        "nop                                 \n"// H1 t12
+        "BRES    L:0x500A,      #0x4         \n"// L1 t1
+        "nop                                 \n"// L1 t2
+        "JRA     L:lb_start_bit1             \n"// L1 JRA:2 t4 
+                                                // L1 NextBitTest:4  t8
+        "lb_bit0_Send_0:                     \n"//------Send 0 : 400ns High, 850ns Low (7,13) 375ns,875ns
+                                                // H0 t6 in stand of t4
+        "BRES    L:0x500A,      #0x4         \n"// L0 t1
+        "nop                                 \n"// L0 t1
+        "nop                                 \n"// L0 t2
+        "nop                                 \n"// L0 t3
+        "nop                                 \n"// L0 t4
+        "nop                                 \n"// L0 t5
+        "nop                                 \n"// L0 t6
+        "nop                                 \n"// L0 t7
+        "nop                                 \n"// L0 t8
+                                                //NextBitTest:4+SP = 5. L t13
+//--------------- bit 1 -----------------------------------------
+        "lb_start_bit1:                      \n"//
+        "LD      A,           (L:LedsArray,X)\n"//1
+        "AND     A,             #0x40        \n"//1
+        "JREQ    L:lb_bit1_Send_0            \n"//2 jump to Zero, 1 Stay in One + next nop
+        "lb_bit1_Send_1:                     \n"
+        "nop                                 \n"//1 to have send0 send1 equality
+        "BSET    L:0x500A,      #0x4         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "nop                                 \n"// H t7
+        "nop                                 \n"// H t8
+        "nop                                 \n"// H t9
+        "nop                                 \n"// H t10
+        "nop                                 \n"// H t11
+        "nop                                 \n"// H t12
+        "BRES    L:0x500A,      #0x4         \n"// L t1
+        "nop                                 \n"// L t2
+        "JRA     L:lb_start_bit2             \n"// L JRA:2 t4 
+                                                // L NextBitTest:4  t8
+        "lb_bit1_Send_0:                     \n"//------Send 0 : 400ns High, 850ns Low (6,14) 375ns,875ns
+        "BSET    L:0x500A,      #0x4         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "BRES    L:0x500A,      #0x4         \n"// L t1
+        "nop                                 \n"// L t1
+        "nop                                 \n"// L t2
+        "nop                                 \n"// L t3
+        "nop                                 \n"// L t4
+        "nop                                 \n"// L t5
+        "nop                                 \n"// L t6
+        "nop                                 \n"// L t7
+        "nop                                 \n"// L t8
+        "nop                                 \n"// L t9
+                                                //NextBitTest:4+SP = 5. L t14
+//--------------- bit 2 -----------------------------------------
+        "lb_start_bit2:                      \n"//
+        "LD      A,           (L:LedsArray,X)\n"//1
+        "AND     A,             #0x20        \n"//1
+        "JREQ    L:lb_bit2_Send_0            \n"//2 jump to Zero, 1 Stay in One + next nop
+        "lb_bit2_Send_1:                     \n"
+        "nop                                 \n"//1 to have send0 send1 equality
+        "BSET    L:0x500A,      #0x4         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "nop                                 \n"// H t7
+        "nop                                 \n"// H t8
+        "nop                                 \n"// H t9
+        "nop                                 \n"// H t10
+        "nop                                 \n"// H t11
+        "nop                                 \n"// H t12
+        "BRES    L:0x500A,      #0x4         \n"// L t1
+        "nop                                 \n"// L t2
+        "JRA     L:lb_start_bit3             \n"// L JRA:2 t4 
+                                                // L NextBitTest:4  t8
+        "lb_bit2_Send_0:                     \n"//------Send 0 : 400ns High, 850ns Low (6,14) 375ns,875ns
+        "BSET    L:0x500A,      #0x4         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "BRES    L:0x500A,      #0x4         \n"// L t1
+        "nop                                 \n"// L t1
+        "nop                                 \n"// L t2
+        "nop                                 \n"// L t3
+        "nop                                 \n"// L t4
+        "nop                                 \n"// L t5
+        "nop                                 \n"// L t6
+        "nop                                 \n"// L t7
+        "nop                                 \n"// L t8
+        "nop                                 \n"// L t9
+                                                //NextBitTest:4+SP = 5. L t14
+//--------------- bit 3 -----------------------------------------
+        "lb_start_bit3:                      \n"//
+        "LD      A,           (L:LedsArray,X)\n"//1
+        "AND     A,             #0x10        \n"//1
+        "JREQ    L:lb_bit3_Send_0            \n"//2 jump to Zero, 1 Stay in One + next nop
+        "lb_bit3_Send_1:                     \n"
+        "nop                                 \n"//1 to have send0 send1 equality
+        "BSET    L:0x500A,      #0x4         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "nop                                 \n"// H t7
+        "nop                                 \n"// H t8
+        "nop                                 \n"// H t9
+        "nop                                 \n"// H t10
+        "nop                                 \n"// H t11
+        "nop                                 \n"// H t12
+        "BRES    L:0x500A,      #0x4         \n"// L t1
+        "nop                                 \n"// L t2
+        "JRA     L:lb_start_bit4             \n"// L JRA:2 t4 
+                                                // L NextBitTest:4  t8
+        "lb_bit3_Send_0:                     \n"//------Send 0 : 400ns High, 850ns Low (6,14) 375ns,875ns
+        "BSET    L:0x500A,      #0x4         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "BRES    L:0x500A,      #0x4         \n"// L t1
+        "nop                                 \n"// L t1
+        "nop                                 \n"// L t2
+        "nop                                 \n"// L t3
+        "nop                                 \n"// L t4
+        "nop                                 \n"// L t5
+        "nop                                 \n"// L t6
+        "nop                                 \n"// L t7
+        "nop                                 \n"// L t8
+        "nop                                 \n"// L t9
+                                                //NextBitTest:4+SP = 5. L t14
+//--------------- bit 4 -----------------------------------------
+        "lb_start_bit4:                      \n"//
+        "LD      A,           (L:LedsArray,X)\n"//1
+        "AND     A,             #0x08        \n"//1
+        "JREQ    L:lb_bit4_Send_0            \n"//2 jump to Zero, 1 Stay in One + next nop
+        "lb_bit4_Send_1:                     \n"
+        "nop                                 \n"//1 to have send0 send1 equality
+        "BSET    L:0x500A,      #0x4         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "nop                                 \n"// H t7
+        "nop                                 \n"// H t8
+        "nop                                 \n"// H t9
+        "nop                                 \n"// H t10
+        "nop                                 \n"// H t11
+        "nop                                 \n"// H t12
+        "BRES    L:0x500A,      #0x4         \n"// L t1
+        "nop                                 \n"// L t2
+        "JRA     L:lb_start_bit5             \n"// L JRA:2 t4 
+                                                // L NextBitTest:4  t8
+        "lb_bit4_Send_0:                     \n"//------Send 0 : 400ns High, 850ns Low (6,14) 375ns,875ns
+        "BSET    L:0x500A,      #0x4         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "BRES    L:0x500A,      #0x4         \n"// L t1
+        "nop                                 \n"// L t1
+        "nop                                 \n"// L t2
+        "nop                                 \n"// L t3
+        "nop                                 \n"// L t4
+        "nop                                 \n"// L t5
+        "nop                                 \n"// L t6
+        "nop                                 \n"// L t7
+        "nop                                 \n"// L t8
+        "nop                                 \n"// L t9
+                                                //NextBitTest:4+SP = 5. L t14
+//--------------- bit 5 -----------------------------------------
+        "lb_start_bit5:                      \n"//
+        "LD      A,           (L:LedsArray,X)\n"//1
+        "AND     A,             #0x04        \n"//1
+        "JREQ    L:lb_bit5_Send_0            \n"//2 jump to Zero, 1 Stay in One + next nop
+        "lb_bit5_Send_1:                     \n"
+        "nop                                 \n"//1 to have send0 send1 equality
+        "BSET    L:0x500A,      #0x4         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "nop                                 \n"// H t7
+        "nop                                 \n"// H t8
+        "nop                                 \n"// H t9
+        "nop                                 \n"// H t10
+        "nop                                 \n"// H t11
+        "nop                                 \n"// H t12
+        "BRES    L:0x500A,      #0x4         \n"// L t1
+        "nop                                 \n"// L t2
+        "JRA     L:lb_start_bit6             \n"// L JRA:2 t4 
+                                                // L NextBitTest:4  t8
+        "lb_bit5_Send_0:                     \n"//------Send 0 : 400ns High, 850ns Low (6,14) 375ns,875ns
+        "BSET    L:0x500A,      #0x4         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "BRES    L:0x500A,      #0x4         \n"// L t1
+        "nop                                 \n"// L t1
+        "nop                                 \n"// L t2
+        "nop                                 \n"// L t3
+        "nop                                 \n"// L t4
+        "nop                                 \n"// L t5
+        "nop                                 \n"// L t6
+        "nop                                 \n"// L t7
+        "nop                                 \n"// L t8
+        "nop                                 \n"// L t9
+                                                //NextBitTest:4+SP = 5. L t14
+//--------------- bit 6 -----------------------------------------
+        "lb_start_bit6:                      \n"//
+        "LD      A,           (L:LedsArray,X)\n"//1
+        "AND     A,             #0x02        \n"//1
+        "JREQ    L:lb_bit6_Send_0            \n"//2 jump to Zero, 1 Stay in One + next nop
+        "lb_bit6_Send_1:                     \n"
+        "nop                                 \n"//1 to have send0 send1 equality
+        "BSET    L:0x500A,      #0x4         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "nop                                 \n"// H t7
+        "nop                                 \n"// H t8
+        "nop                                 \n"// H t9
+        "nop                                 \n"// H t10
+        "nop                                 \n"// H t11
+        "nop                                 \n"// H t12
+        "BRES    L:0x500A,      #0x4         \n"// L t1
+        "nop                                 \n"// L t2
+        "JRA     L:lb_start_bit7             \n"// L JRA:2 t4 
+                                                // L NextBitTest:4  t8
+        "lb_bit6_Send_0:                     \n"//------Send 0 : 400ns High, 850ns Low (6,14) 375ns,875ns
+        "BSET    L:0x500A,      #0x4         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "BRES    L:0x500A,      #0x4         \n"// L t1
+        "nop                                 \n"// L t1
+        "nop                                 \n"// L t2
+        "nop                                 \n"// L t3
+        "nop                                 \n"// L t4
+        "nop                                 \n"// L t5
+        "nop                                 \n"// L t6
+        "nop                                 \n"// L t7
+        "nop                                 \n"// L t8
+        "nop                                 \n"// L t9
+                                                //NextBitTest:4+SP = 5. L t14
+//--------------- bit 7 -----------------------------------------
+        "lb_start_bit7:                      \n"//
+        "LD      A,           (L:LedsArray,X)\n"//1
+        "AND     A,             #0x01        \n"//1
+        "JREQ    L:lb_bit7_Send_0            \n"//2 jump to Zero, 1 Stay in One + next nop
+        "lb_bit7_Send_1:                     \n"
+        "nop                                 \n"//1 to have send0 send1 equality
+        "BSET    L:0x500A,      #0x4         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "nop                                 \n"// H t7
+        "nop                                 \n"// H t8
+        "nop                                 \n"// H t9
+        "nop                                 \n"// H t10
+        "nop                                 \n"// H t11
+        "nop                                 \n"// H t12
+        "BRES    L:0x500A,      #0x4         \n"// L t1
+        "DECW    Y                           \n"//2
+        "JREQ    L:lb_exit                   \n"//1 on loop, 2 jmp to exit
+        "JP      L:lb_begin_loop             \n"//5
+                                                // 
+        "lb_bit7_Send_0:                     \n"//------Send 0 : 400ns High, 850ns Low (6,14) 375ns,875ns
+        "BSET    L:0x500A,      #0x4         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "BRES    L:0x500A,      #0x4         \n"// L t1
+        "nop                                 \n"// L t1
+        "nop                                 \n"// L t2
+        "nop                                 \n"// L t3
+        "nop                                 \n"// L t4
+        "nop                                 \n"// L t5
+        "nop                                 \n"// L t6
+                                                // L DECW 2, JREQ 1, 2 = 5 =>   t14
+//--------------------------------------------------------
+//--------------------------------------------------------
+        "DECW    Y                           \n"//2
+        "JREQ    L:lb_exit                   \n"//1 on loop, 2 jmp to exit
+        "JP      L:lb_begin_loop             \n"//5
+        "lb_exit:nop");
+  
+}
+void SendLedsArrayC3()
+{
+  asm(
+        "lb_intiLoop:                          \n"
+        "LDW      X,             #0xFFFF       \n"// set -1 in X, so that first inc gets 0, as inc has to be in the beginning of the loop
+        "LDW      Y,             L:nbLedsBytes \n"//2
+        "lb_begin_loop:                        \n"
+//---------------------------------------------------------------
+//--------------- bit 0 -----------------------------------------
+        "INCW    X                           \n"// L t+2
+        "BSET    L:0x500A,      #0x3         \n"// H t1
+        "lb_start_bit0:                      \n"//
+        "LD      A,           (L:LedsArray,X)\n"// H t2
+        "AND     A,             #0x80        \n"// H t3
+        "JREQ    L:lb_bit0_Send_0            \n"// H0 t4 t5 : 2 jump to Zero, 1 Stay in One + next nop
+        "lb_bit0_Send_1:                     \n"//------Send 1 : 800ns High, 450ns Low (12,8) 750ns,500ns
+        "nop                                 \n"//1 to have send0 send1 equality
+        "nop                                 \n"// H1 t6
+        "nop                                 \n"// H1 t7
+        "nop                                 \n"// H1 t8
+        "nop                                 \n"// H1 t9
+        "nop                                 \n"// H1 t10
+        "nop                                 \n"// H1 t11
+        "nop                                 \n"// H1 t12
+        "BRES    L:0x500A,      #0x3         \n"// L1 t1
+        "nop                                 \n"// L1 t2
+        "JRA     L:lb_start_bit1             \n"// L1 JRA:2 t4 
+                                                // L1 NextBitTest:4  t8
+        "lb_bit0_Send_0:                     \n"//------Send 0 : 400ns High, 850ns Low (7,13) 375ns,875ns
+                                                // H0 t6 in stand of t4
+        "BRES    L:0x500A,      #0x3         \n"// L0 t1
+        "nop                                 \n"// L0 t1
+        "nop                                 \n"// L0 t2
+        "nop                                 \n"// L0 t3
+        "nop                                 \n"// L0 t4
+        "nop                                 \n"// L0 t5
+        "nop                                 \n"// L0 t6
+        "nop                                 \n"// L0 t7
+        "nop                                 \n"// L0 t8
+                                                //NextBitTest:4+SP = 5. L t13
+//--------------- bit 1 -----------------------------------------
+        "lb_start_bit1:                      \n"//
+        "LD      A,           (L:LedsArray,X)\n"//1
+        "AND     A,             #0x40        \n"//1
+        "JREQ    L:lb_bit1_Send_0            \n"//2 jump to Zero, 1 Stay in One + next nop
+        "lb_bit1_Send_1:                     \n"
+        "nop                                 \n"//1 to have send0 send1 equality
+        "BSET    L:0x500A,      #0x3         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "nop                                 \n"// H t7
+        "nop                                 \n"// H t8
+        "nop                                 \n"// H t9
+        "nop                                 \n"// H t10
+        "nop                                 \n"// H t11
+        "nop                                 \n"// H t12
+        "BRES    L:0x500A,      #0x3         \n"// L t1
+        "nop                                 \n"// L t2
+        "JRA     L:lb_start_bit2             \n"// L JRA:2 t4 
+                                                // L NextBitTest:4  t8
+        "lb_bit1_Send_0:                     \n"//------Send 0 : 400ns High, 850ns Low (6,14) 375ns,875ns
+        "BSET    L:0x500A,      #0x3         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "BRES    L:0x500A,      #0x3         \n"// L t1
+        "nop                                 \n"// L t1
+        "nop                                 \n"// L t2
+        "nop                                 \n"// L t3
+        "nop                                 \n"// L t4
+        "nop                                 \n"// L t5
+        "nop                                 \n"// L t6
+        "nop                                 \n"// L t7
+        "nop                                 \n"// L t8
+        "nop                                 \n"// L t9
+                                                //NextBitTest:4+SP = 5. L t14
+//--------------- bit 2 -----------------------------------------
+        "lb_start_bit2:                      \n"//
+        "LD      A,           (L:LedsArray,X)\n"//1
+        "AND     A,             #0x20        \n"//1
+        "JREQ    L:lb_bit2_Send_0            \n"//2 jump to Zero, 1 Stay in One + next nop
+        "lb_bit2_Send_1:                     \n"
+        "nop                                 \n"//1 to have send0 send1 equality
+        "BSET    L:0x500A,      #0x3         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "nop                                 \n"// H t7
+        "nop                                 \n"// H t8
+        "nop                                 \n"// H t9
+        "nop                                 \n"// H t10
+        "nop                                 \n"// H t11
+        "nop                                 \n"// H t12
+        "BRES    L:0x500A,      #0x3         \n"// L t1
+        "nop                                 \n"// L t2
+        "JRA     L:lb_start_bit3             \n"// L JRA:2 t4 
+                                                // L NextBitTest:4  t8
+        "lb_bit2_Send_0:                     \n"//------Send 0 : 400ns High, 850ns Low (6,14) 375ns,875ns
+        "BSET    L:0x500A,      #0x3         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "BRES    L:0x500A,      #0x3         \n"// L t1
+        "nop                                 \n"// L t1
+        "nop                                 \n"// L t2
+        "nop                                 \n"// L t3
+        "nop                                 \n"// L t4
+        "nop                                 \n"// L t5
+        "nop                                 \n"// L t6
+        "nop                                 \n"// L t7
+        "nop                                 \n"// L t8
+        "nop                                 \n"// L t9
+                                                //NextBitTest:4+SP = 5. L t14
+//--------------- bit 3 -----------------------------------------
+        "lb_start_bit3:                      \n"//
+        "LD      A,           (L:LedsArray,X)\n"//1
+        "AND     A,             #0x10        \n"//1
+        "JREQ    L:lb_bit3_Send_0            \n"//2 jump to Zero, 1 Stay in One + next nop
+        "lb_bit3_Send_1:                     \n"
+        "nop                                 \n"//1 to have send0 send1 equality
+        "BSET    L:0x500A,      #0x3         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "nop                                 \n"// H t7
+        "nop                                 \n"// H t8
+        "nop                                 \n"// H t9
+        "nop                                 \n"// H t10
+        "nop                                 \n"// H t11
+        "nop                                 \n"// H t12
+        "BRES    L:0x500A,      #0x3         \n"// L t1
+        "nop                                 \n"// L t2
+        "JRA     L:lb_start_bit4             \n"// L JRA:2 t4 
+                                                // L NextBitTest:4  t8
+        "lb_bit3_Send_0:                     \n"//------Send 0 : 400ns High, 850ns Low (6,14) 375ns,875ns
+        "BSET    L:0x500A,      #0x3         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "BRES    L:0x500A,      #0x3         \n"// L t1
+        "nop                                 \n"// L t1
+        "nop                                 \n"// L t2
+        "nop                                 \n"// L t3
+        "nop                                 \n"// L t4
+        "nop                                 \n"// L t5
+        "nop                                 \n"// L t6
+        "nop                                 \n"// L t7
+        "nop                                 \n"// L t8
+        "nop                                 \n"// L t9
+                                                //NextBitTest:4+SP = 5. L t14
+//--------------- bit 4 -----------------------------------------
+        "lb_start_bit4:                      \n"//
+        "LD      A,           (L:LedsArray,X)\n"//1
+        "AND     A,             #0x08        \n"//1
+        "JREQ    L:lb_bit4_Send_0            \n"//2 jump to Zero, 1 Stay in One + next nop
+        "lb_bit4_Send_1:                     \n"
+        "nop                                 \n"//1 to have send0 send1 equality
+        "BSET    L:0x500A,      #0x3         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "nop                                 \n"// H t7
+        "nop                                 \n"// H t8
+        "nop                                 \n"// H t9
+        "nop                                 \n"// H t10
+        "nop                                 \n"// H t11
+        "nop                                 \n"// H t12
+        "BRES    L:0x500A,      #0x3         \n"// L t1
+        "nop                                 \n"// L t2
+        "JRA     L:lb_start_bit5             \n"// L JRA:2 t4 
+                                                // L NextBitTest:4  t8
+        "lb_bit4_Send_0:                     \n"//------Send 0 : 400ns High, 850ns Low (6,14) 375ns,875ns
+        "BSET    L:0x500A,      #0x3         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "BRES    L:0x500A,      #0x3         \n"// L t1
+        "nop                                 \n"// L t1
+        "nop                                 \n"// L t2
+        "nop                                 \n"// L t3
+        "nop                                 \n"// L t4
+        "nop                                 \n"// L t5
+        "nop                                 \n"// L t6
+        "nop                                 \n"// L t7
+        "nop                                 \n"// L t8
+        "nop                                 \n"// L t9
+                                                //NextBitTest:4+SP = 5. L t14
+//--------------- bit 5 -----------------------------------------
+        "lb_start_bit5:                      \n"//
+        "LD      A,           (L:LedsArray,X)\n"//1
+        "AND     A,             #0x04        \n"//1
+        "JREQ    L:lb_bit5_Send_0            \n"//2 jump to Zero, 1 Stay in One + next nop
+        "lb_bit5_Send_1:                     \n"
+        "nop                                 \n"//1 to have send0 send1 equality
+        "BSET    L:0x500A,      #0x3         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "nop                                 \n"// H t7
+        "nop                                 \n"// H t8
+        "nop                                 \n"// H t9
+        "nop                                 \n"// H t10
+        "nop                                 \n"// H t11
+        "nop                                 \n"// H t12
+        "BRES    L:0x500A,      #0x3         \n"// L t1
+        "nop                                 \n"// L t2
+        "JRA     L:lb_start_bit6             \n"// L JRA:2 t4 
+                                                // L NextBitTest:4  t8
+        "lb_bit5_Send_0:                     \n"//------Send 0 : 400ns High, 850ns Low (6,14) 375ns,875ns
+        "BSET    L:0x500A,      #0x3         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "BRES    L:0x500A,      #0x3         \n"// L t1
+        "nop                                 \n"// L t1
+        "nop                                 \n"// L t2
+        "nop                                 \n"// L t3
+        "nop                                 \n"// L t4
+        "nop                                 \n"// L t5
+        "nop                                 \n"// L t6
+        "nop                                 \n"// L t7
+        "nop                                 \n"// L t8
+        "nop                                 \n"// L t9
+                                                //NextBitTest:4+SP = 5. L t14
+//--------------- bit 6 -----------------------------------------
+        "lb_start_bit6:                      \n"//
+        "LD      A,           (L:LedsArray,X)\n"//1
+        "AND     A,             #0x02        \n"//1
+        "JREQ    L:lb_bit6_Send_0            \n"//2 jump to Zero, 1 Stay in One + next nop
+        "lb_bit6_Send_1:                     \n"
+        "nop                                 \n"//1 to have send0 send1 equality
+        "BSET    L:0x500A,      #0x3         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "nop                                 \n"// H t7
+        "nop                                 \n"// H t8
+        "nop                                 \n"// H t9
+        "nop                                 \n"// H t10
+        "nop                                 \n"// H t11
+        "nop                                 \n"// H t12
+        "BRES    L:0x500A,      #0x3         \n"// L t1
+        "nop                                 \n"// L t2
+        "JRA     L:lb_start_bit7             \n"// L JRA:2 t4 
+                                                // L NextBitTest:4  t8
+        "lb_bit6_Send_0:                     \n"//------Send 0 : 400ns High, 850ns Low (6,14) 375ns,875ns
+        "BSET    L:0x500A,      #0x3         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "BRES    L:0x500A,      #0x3         \n"// L t1
+        "nop                                 \n"// L t1
+        "nop                                 \n"// L t2
+        "nop                                 \n"// L t3
+        "nop                                 \n"// L t4
+        "nop                                 \n"// L t5
+        "nop                                 \n"// L t6
+        "nop                                 \n"// L t7
+        "nop                                 \n"// L t8
+        "nop                                 \n"// L t9
+                                                //NextBitTest:4+SP = 5. L t14
+//--------------- bit 7 -----------------------------------------
+        "lb_start_bit7:                      \n"//
+        "LD      A,           (L:LedsArray,X)\n"//1
+        "AND     A,             #0x01        \n"//1
+        "JREQ    L:lb_bit7_Send_0            \n"//2 jump to Zero, 1 Stay in One + next nop
+        "lb_bit7_Send_1:                     \n"
+        "nop                                 \n"//1 to have send0 send1 equality
+        "BSET    L:0x500A,      #0x3         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "nop                                 \n"// H t7
+        "nop                                 \n"// H t8
+        "nop                                 \n"// H t9
+        "nop                                 \n"// H t10
+        "nop                                 \n"// H t11
+        "nop                                 \n"// H t12
+        "BRES    L:0x500A,      #0x3         \n"// L t1
+        "DECW    Y                           \n"//2
+        "JREQ    L:lb_exit                   \n"//1 on loop, 2 jmp to exit
+        "JP      L:lb_begin_loop             \n"//5
+                                                // 
+        "lb_bit7_Send_0:                     \n"//------Send 0 : 400ns High, 850ns Low (6,14) 375ns,875ns
+        "BSET    L:0x500A,      #0x3         \n"// H t1
+        "nop                                 \n"// H t2
+        "nop                                 \n"// H t3
+        "nop                                 \n"// H t4
+        "nop                                 \n"// H t5
+        "nop                                 \n"// H t6
+        "BRES    L:0x500A,      #0x3         \n"// L t1
+        "nop                                 \n"// L t1
+        "nop                                 \n"// L t2
+        "nop                                 \n"// L t3
+        "nop                                 \n"// L t4
+        "nop                                 \n"// L t5
+        "nop                                 \n"// L t6
+                                                // L DECW 2, JREQ 1, 2 = 5 =>   t14
+//--------------------------------------------------------
+//--------------------------------------------------------
+        "DECW    Y                           \n"//2
+        "JREQ    L:lb_exit                   \n"//1 on loop, 2 jmp to exit
+        "JP      L:lb_begin_loop             \n"//5
+        "lb_exit:nop");
+  
+}
+
+void SendLedsArray()
+{
+//  switch (r) {
+//    case 1:
+//      SendLedsArrayD3();
+//      break;
+//    case 2:
+//      SendLedsArrayD2();
+//      break;
+//    case 3:
+//      SendLedsArrayD1();
+//      break;
+//    case 4:
+//      SendLedsArrayC7();
+//      break;
+//    case 5:
+//      SendLedsArrayC6();
+//      break;
+//    case 6:
+//      SendLedsArrayC5();
+//      break;  
+//    case 7:
+//      SendLedsArrayC4();
+//      break;
+//    case 8:
+//      SendLedsArrayC3();
+//      break;
+//    default:
+//      GPIO_WriteReverse(ONBOARD_LED_PORT, ONBOARD_LED_PIN);
+      __disable_interrupt();
+      SendLedsArrayD3();
+      SendLedsArrayD2();
+      SendLedsArrayD1();
+      SendLedsArrayC7();
+      SendLedsArrayC6();
+      SendLedsArrayC5();
+      SendLedsArrayC4();
+      SendLedsArrayC3();
+      enableInterrupts();
+//  }
+}
+
+void SetLedColor(BYTE LedId, BYTE R, BYTE G, BYTE B)
+{
+//  switch (r) {
+//    case 1:
+//      LedsArray[LedId*3] = G;
+//      LedsArray[LedId*3+1] = R;
+//      LedsArray[LedId*3+2] = B;
+//      break;
+//    case 2:
+//      LedsArray[LedId*3] = G;
+//      LedsArray[LedId*3+1] = R;
+//      LedsArray[LedId*3+2] = B;
+//      break;
+//    case 3:
+//      LedsArray[LedId*3] = G;
+//      LedsArray[LedId*3+1] = R;
+//      LedsArray[LedId*3+2] = B;
+//      break;
+//    case 4:
+//      LedsArray[LedId*3] = G;
+//      LedsArray[LedId*3+1] = R;
+//      LedsArray[LedId*3+2] = B;
+//      break;
+//    case 5:
+//      LedsArray[LedId*3] = G;
+//      LedsArray[LedId*3+1] = R;
+//      LedsArray[LedId*3+2] = B;
+//      break;
+//    case 6:
+//      LedsArray[LedId*3] = G;
+//      LedsArray[LedId*3+1] = R;
+//      LedsArray[LedId*3+2] = B;
+//      break;
+//    case 7:
+//      LedsArray[LedId*3] = G;
+//      LedsArray[LedId*3+1] = R;
+//      LedsArray[LedId*3+2] = B;
+//      break;
+//    case 8:
+//      LedsArray[LedId*3] = G;
+//      LedsArray[LedId*3+1] = R;
+//      LedsArray[LedId*3+2] = B;
+//      break;
+//    default:
+//      GPIO_WriteReverse(ONBOARD_LED_PORT, ONBOARD_LED_PIN);
+      LedsArray[LedId*3] = G;
+      LedsArray[LedId*3+1] = R;
+      LedsArray[LedId*3+2] = B;
+//  }  
+}
+
+// Delay loop
+//
+// Actual delay depends on clock settings
+// and compiler optimization settings.
+//
+//void delay(unsigned int n)
+//{
+//    while (n-- > 0);
+//}
+//
+//void delay_1ms_Count(unsigned int n)
+//{
+//    while (n-- > 0)
+//	{
+//		delay_1ms();
+//	}
+//}
+
+
+int main( void )
+{
+  CLK_Config();
+  GPIO_Config();
+  TIM4_Config();
+//
+// Try #0 (cleaning all to 0)
+//
+//  for (int i=0;i<256;i++)
+//    SetLedColor(i,0,0,0);
+//  SendLedsArray();
+//  Delay(1000);
+//
+// Try #1 (slow waterdrop)
+//
+//  for (int i=0;i<255;i++)
+//  {
+//    if (i>0) SetLedColor(i-1,0,0,0); // Cleaning previous diod to "black"
+//    for (int m=0;m<128;m++)
+//    {
+//      int n=(2*m)-1;
+//      int o=255-n;
+//      if (m>0) { SetLedColor(i+1,n,n,n); SetLedColor(i,o,o,o); }
+//      else { SetLedColor(i+1,0,0,0); SetLedColor(i,255,255,255); }
+//      SendLedsArray();
+//      Delay(1);
+//    }
+//  }
+// End Try #1  
+//  Delay(5000);
+//  
+// Try #2 ((two colors)  
+//
+//    for (int i=0;i<30;i++)
+//      {
+//        if(i%2){
+//          SetLedColor(i,0,0,0);
+//        } else
+//          SetLedColor(i,255,255,255);
+//      }
+//      SendLedsArray();
+// 
+// End Try #2 
+//
+//
+// Try #3 (growing light from blue to white)  
+//
+//  for (int i=0;i<256;i++)
+//    SetLedColor(i,0,0,30);
+//  SendLedsArray();
+//  Delay(1000);
+//  for (int j=30;j<256;j++)
+//  {
+//    for (int i=0;i<256;i++)
+//      SetLedColor(i,0,0,j);
+//    SendLedsArray();
+//    Delay(5);
+//  }
+//  for (int j=0;j<256;j++)
+//  {
+//    for (int i=0;i<256;i++)
+//      SetLedColor(i,0,j,255);
+//    SendLedsArray();
+//    Delay(5);;
+//  }
+//  for (int j=0;j<256;j++)
+//  {
+//    for (int i=0;i<256;i++)
+//      SetLedColor(i,j,255,255);
+//    SendLedsArray();
+//    Delay(5);
+//  }
+//  End Try #3 
+//
+// Try #4 (running light with blue background)  
+//
+//  for (int i=0;i<256;i++)
+//    SetLedColor(i,0,0,64);
+//  SendLedsArray();
+//  Delay(1000);
+//  for (int i=0;i<256;i++)
+//  {
+//    for (int m=0;m<4;m++)
+//    {
+//      int n=(64*m)-1;
+//      if (m>0) { SetLedColor(i,n,n,n); }
+//      else { SetLedColor(i,0,0,0); }
+//      SendLedsArray();
+//      Delay(1);
+//    }
+//  }
+//  
+// End Try #4
+//  
+  
+// basement lights
+//  int r;
+//  for (r=q;r>0;r--){
+    for (int i=0;i<NbLeds;i++)
+      SetLedColor(i,0,0,64);
+    SendLedsArray(); 
+//  }
+  Delay(1000);
+  int n;
+  int o;
+//  for (r=q;r>0;r--){
+    // dirty fix
+//    for (int i=0;i<NbLeds;i++)
+//      SetLedColor(i,0,0,64);
+//    SendLedsArray();
+    for (int i=0;i<NbLeds;i++)
+    {
+      for (int m=0;m<4;m++)
+      {
+        n=(64*m)-1;
+        if (m>0) { SetLedColor(i,n,n,n); }
+        else { SetLedColor(i,0,0,0); }
+        SendLedsArray();
+        Delay(1);
+      }
+    }
+    for (int i=0;i<NbLeds;i++)
+      {
+        if(i%2) SetLedColor(i,0,0,0); else SetLedColor(i,255,255,255);
+      }
+    SendLedsArray();
+//  }
+  Delay(1000);
+  bool p=TRUE;
+  while(TRUE)
+  {
+    for (int i=0;i<NbLeds;i++) {
+//      for (r=q;r>0;r--){
+        if (p && i%2==0){
+          for (int m=1;m<128;m++) {
+            n=(2*m)+1;
+            o=255-n;
+            SetLedColor(i+1,n,n,n); SetLedColor(i,o,o,o);
+            SendLedsArray();
+            Delay(20);
+          }
+        }
+        if (!p && i%2){
+          for (int m=1;m<128;m++) {
+            n=(2*m)+1;
+            o=255-n;
+            SetLedColor(i-1,n,n,n); SetLedColor(i,o,o,o);
+            SendLedsArray();
+            Delay(20);
+          }
+        }
+//      }
+    }
+    p=!p;
+    Delay(100);
+//    GPIO_WriteReverse(ONBOARD_LED_PORT, ONBOARD_LED_PIN);
+  }
+  
+// 
+}
+
+#ifdef USE_FULL_ASSERT
+
+/**
+  * @brief  Reports the name of the source file and the source line number
+  *   where the assert_param error has occurred.
+  * @param file: pointer to the source file name
+  * @param line: assert_param error line source number
+  * @retval None
+  */
+void assert_failed(uint8_t* file, uint32_t line)
+{ 
+  /* User can add his own implementation to report the file name and line number,
+     ex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
+
+  /* Infinite loop */
+  while (1)
+  {
+  }
+}
+#endif
